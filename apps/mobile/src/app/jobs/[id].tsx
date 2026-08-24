@@ -1,12 +1,18 @@
 import { SafeAreaView, StyleSheet, Text, View } from "react-native";
 import { Stack, useLocalSearchParams } from "expo-router";
+import { completeJob, startJob } from "@/features/jobs/job-status";
 
+import { JobAction } from "@/features/jobs/JobAction";
+import { formatJobDate } from "@/features/jobs/formatters";
 import { mockJobs } from "@/features/jobs/mock-data";
+import { useState } from "react";
 
 export default function JobDetailsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
 
   const job = mockJobs.find((item) => item.id === id);
+
+  const [status, setStatus] = useState(job?.status ?? "scheduled");
 
   if (!job) {
     return (
@@ -17,6 +23,14 @@ export default function JobDetailsScreen() {
         </View>
       </SafeAreaView>
     );
+  }
+
+  function handleStartJob() {
+    setStatus((currentStatus) => startJob(currentStatus));
+  }
+
+  function handleCompleteJob() {
+    setStatus((currentStatus) => completeJob(currentStatus));
   }
 
   return (
@@ -38,7 +52,7 @@ export default function JobDetailsScreen() {
 
         <View style={styles.section}>
           <Text style={styles.label}>Scheduled</Text>
-          <Text style={styles.value}>{job.scheduledAt}</Text>
+          <Text style={styles.value}>{formatJobDate(job.scheduledAt)}</Text>
         </View>
 
         <View style={styles.section}>
@@ -46,6 +60,20 @@ export default function JobDetailsScreen() {
           <Text style={styles.value}>{job.location}</Text>
         </View>
       </View>
+
+      {/* {status === "scheduled" && (
+        <Pressable onPress={handleStartJob} style={styles.actionButton}>
+          <Text style={styles.actionButtonText}>Start Job</Text>
+        </Pressable>
+      )} */}
+
+      {status === "scheduled" && (
+        <JobAction label="Start Job" onPress={handleStartJob} />
+      )}
+
+      {status === "in_progress" && (
+        <JobAction label="Complete Job" onPress={handleCompleteJob} />
+      )}
     </SafeAreaView>
   );
 }
