@@ -2,16 +2,24 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import type { Job } from "./types";
 import { formatJobDate } from "./formatters";
+import { router } from "expo-router";
 
 interface JobCardProps {
   job: Job;
   onPress?: (job: Job) => void;
 }
 
-export function JobCard({ job, onPress }: JobCardProps) {
+export function JobCard({ job }: JobCardProps) {
   return (
     <Pressable
-      onPress={() => onPress?.(job)}
+      onPress={() =>
+        router.push({
+          pathname: "/jobs/[id]",
+          params: {
+            id: job.id,
+          },
+        })
+      }
       style={({ pressed }) => [styles.card, pressed && styles.pressed]}
     >
       <View style={styles.header}>
