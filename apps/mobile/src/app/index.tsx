@@ -1,18 +1,20 @@
-import { SafeAreaView, StyleSheet, Text, View } from "react-native";
+import { FlatList, SafeAreaView, StyleSheet, Text, View } from "react-native";
+
+import { JobCard } from "@/features/jobs/JobCard";
+import { mockJobs } from "@/features/jobs/mock-data";
 
 export default function JobsScreen() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
-        <Text style={styles.title}>Field Service</Text>
-        <Text style={styles.subtitle}>Jobs</Text>
+        <Text style={styles.title}>Jobs</Text>
 
-        <View style={styles.emptyState}>
-          <Text style={styles.emptyTitle}>No jobs yet</Text>
-          <Text style={styles.emptyText}>
-            Your assigned field jobs will appear here.
-          </Text>
-        </View>
+        <FlatList
+          data={mockJobs}
+          keyExtractor={(job) => job.id}
+          renderItem={({ item }) => <JobCard job={item} />}
+          contentContainerStyle={styles.listContent}
+        />
       </View>
     </SafeAreaView>
   );
@@ -24,29 +26,15 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    padding: 20,
+    paddingHorizontal: 20,
   },
   title: {
-    fontSize: 14,
-    fontWeight: "600",
-  },
-  subtitle: {
+    marginTop: 16,
+    marginBottom: 16,
     fontSize: 30,
     fontWeight: "700",
-    marginTop: 4,
   },
-  emptyState: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  emptyTitle: {
-    fontSize: 20,
-    fontWeight: "600",
-  },
-  emptyText: {
-    marginTop: 8,
-    fontSize: 15,
-    textAlign: "center",
+  listContent: {
+    paddingBottom: 24,
   },
 });
