@@ -1,37 +1,95 @@
-import { SafeAreaView, StyleSheet, Text, View } from "react-native";
+import { getJobById, updateJobStatus } from "@/features/jobs/jobs.repository";
 import { Stack, useLocalSearchParams } from "expo-router";
-import { completeJob, startJob } from "@/features/jobs/job-status";
+import { useEffect, useState } from "react";
+import { SafeAreaView, StyleSheet, Text, View } from "react-native";
 
+import { ApiError } from "@/api/api-error";
 import { JobAction } from "@/features/jobs/JobAction";
 import { formatJobDate } from "@/features/jobs/formatters";
-import { mockJobs } from "@/features/jobs/mock-data";
-import { useState } from "react";
+import { Job } from "@/features/jobs/types";
+
+// import { completeJob, startJob } from "@/features/jobs/job-status";
+// import { mockJobs } from "@/features/jobs/mock-data";
 
 export default function JobDetailsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
 
-  const job = mockJobs.find((item) => item.id === id);
+  const [job, setJob] = useState<Job | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const [status, setStatus] = useState(job?.status ?? "scheduled");
+  async function loadJobs() {
+    try {
+      setIsLoading(true);
+      setError(null);
+
+      const data = await getJobById(id);
+
+      if (data) {
+        setJob(data);
+      }
+    } catch (error) {
+      setError(
+        error instanceof ApiError
+          ? error.message
+          : "Failed to fetch job. Please try again later.",
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function handleStatusUpdate(status: Job["status"]) {
+    try {
+      setIsUpdating(true);
+      setError(null);
+
+      const updatedJob = await updateJobStatus(id, status);
+      setJob(updatedJob);
+    } catch (error) {
+      setError(
+        error instanceof ApiError
+          ? error.message
+          : "Failed to update job status. Please try again later.",
+      );
+    } finally {
+      setIsUpdating(false);
+    }
+  }
+
+  useEffect(() => {
+    loadJobs();
+  }, [id]);
+
+  if (isLoading) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.container}>
+          <Text style={styles.title}>Loading job...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   if (!job) {
     return (
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.container}>
           <Text style={styles.title}>Job not found</Text>
-          <Text>The requested job could not be found.</Text>
+          <Text>{error ?? "The requested job could not be found."}</Text>
         </View>
       </SafeAreaView>
     );
   }
 
-  function handleStartJob() {
-    setStatus((currentStatus) => startJob(currentStatus));
-  }
+  // function handleStartJob() {
+  //   setStatus((currentStatus) => startJob(currentStatus));
+  // }
 
-  function handleCompleteJob() {
-    setStatus((currentStatus) => completeJob(currentStatus));
-  }
+  // function handleCompleteJob() {
+  //   setStatus((currentStatus) => completeJob(currentStatus));
+  // }
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -59,6 +117,8 @@ export default function JobDetailsScreen() {
           <Text style={styles.label}>Location</Text>
           <Text style={styles.value}>{job.location}</Text>
         </View>
+
+        {error && <Text style={styles.error}>{error}</Text>}
       </View>
 
       {/* {status === "scheduled" && (
@@ -67,12 +127,20 @@ export default function JobDetailsScreen() {
         </Pressable>
       )} */}
 
-      {status === "scheduled" && (
-        <JobAction label="Start Job" onPress={handleStartJob} />
+      {job.status === "scheduled" && (
+        <JobAction
+          label={isUpdating ? "Starting..." : "Start Job"}
+          onPress={() => handleStatusUpdate("in_progress")}
+          disabled={isUpdating}
+        />
       )}
 
-      {status === "in_progress" && (
-        <JobAction label="Complete Job" onPress={handleCompleteJob} />
+      {job.status === "in_progress" && (
+        <JobAction
+          label={isUpdating ? "Completing..." : "Complete Job"}
+          onPress={() => handleStatusUpdate("completed")}
+          disabled={isUpdating}
+        />
       )}
     </SafeAreaView>
   );
@@ -106,5 +174,9 @@ const styles = StyleSheet.create({
   },
   value: {
     fontSize: 17,
+  },
+  error: {
+    color: "red",
+    marginTop: 10,
   },
 });

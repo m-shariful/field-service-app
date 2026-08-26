@@ -1,4 +1,6 @@
-import type { Job } from "../models/job";
+import type { Job, JobStatus } from "../models/job";
+
+import { transitionJobStatus } from "./job-status.service";
 
 const jobs: Job[] = [
   {
@@ -34,3 +36,30 @@ export function getJobs(): Job[] {
 export function getJobById(id: string): Job | undefined {
   return jobs.find((job) => job.id === id);
 }
+
+export function updateJobStatus(
+  id: string,
+  newStatus: JobStatus,
+): Job | undefined {
+  const job = getJobById(id);
+
+  if (!job) {
+    throw new Error("Job not found");
+  }
+
+  // We're deliberately allowing the service to mutate the in-memory job.
+  job.status = transitionJobStatus(job.status, newStatus); // This is currently our temporary in-memory persistence.
+
+  return job;
+}
+// Later, when MongoDB/PostgreSQL is introduced, this updateJobStatus function will become something like:
+
+// find job
+//    ↓
+// validate transition
+//    ↓
+// database update
+//    ↓
+// return updated job
+
+// The business rule itself remains separate.

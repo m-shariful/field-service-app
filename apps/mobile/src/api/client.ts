@@ -49,3 +49,37 @@ export async function apiGet<T>(path: string): Promise<T> {
 //    │
 //    ▼
 // Express API
+
+export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
+  let response: Response;
+
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new ApiError("Unable to connect to the server.", 0, "NETWORK_ERROR");
+  }
+
+  if (!response.ok) {
+    let errorData: ApiErrorResponse | undefined;
+
+    try {
+      errorData = (await response.json()) as ApiErrorResponse;
+    } catch {
+      // Response did not contain JSON.
+    }
+
+    throw new ApiError(
+      errorData?.error?.message ?? "API request failed.",
+      response.status,
+      errorData?.error?.code,
+    );
+  }
+
+  return response.json() as Promise<T>;
+}
