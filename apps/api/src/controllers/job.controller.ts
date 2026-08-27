@@ -1,13 +1,13 @@
 import type { Request, Response } from "express";
 import { getJobById, getJobs, updateJobStatus } from "../services/job.service";
 
-export function listJobs(_req: Request, res: Response) {
+export async function listJobs(_req: Request, res: Response) {
   res.json({
-    data: getJobs(),
+    data: await getJobs(),
   });
 }
 
-export function getJob(req: Request, res: Response) {
+export async function getJob(req: Request, res: Response) {
   const { id } = req.params;
 
   if (typeof id !== "string") {
@@ -21,7 +21,7 @@ export function getJob(req: Request, res: Response) {
     return;
   }
 
-  const job = getJobById(id);
+  const job = await getJobById(id);
 
   if (!job) {
     res.status(404).json({
@@ -39,7 +39,7 @@ export function getJob(req: Request, res: Response) {
   });
 }
 
-export function updateJobStatusController(req: Request, res: Response) {
+export async function updateJobStatusController(req: Request, res: Response) {
   const { id } = req.params;
   const { status } = req.body;
 
@@ -68,7 +68,7 @@ export function updateJobStatusController(req: Request, res: Response) {
   let job;
 
   try {
-    job = updateJobStatus(id, status);
+    job = await updateJobStatus(id, status);
   } catch (error) {
     return res.status(400).json({
       error: {
