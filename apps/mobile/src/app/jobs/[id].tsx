@@ -8,9 +8,6 @@ import { JobAction } from "@/features/jobs/JobAction";
 import { formatJobDate } from "@/features/jobs/formatters";
 import { Job } from "@/features/jobs/types";
 
-// import { completeJob, startJob } from "@/features/jobs/job-status";
-// import { mockJobs } from "@/features/jobs/mock-data";
-
 export default function JobDetailsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
 
@@ -25,10 +22,7 @@ export default function JobDetailsScreen() {
       setError(null);
 
       const data = await getJobById(id);
-
-      if (data) {
-        setJob(data);
-      }
+      setJob(data);
     } catch (error) {
       setError(
         error instanceof ApiError
@@ -83,14 +77,6 @@ export default function JobDetailsScreen() {
     );
   }
 
-  // function handleStartJob() {
-  //   setStatus((currentStatus) => startJob(currentStatus));
-  // }
-
-  // function handleCompleteJob() {
-  //   setStatus((currentStatus) => completeJob(currentStatus));
-  // }
-
   return (
     <SafeAreaView style={styles.safeArea}>
       <Stack.Screen options={{ title: job.title }} />
@@ -120,12 +106,6 @@ export default function JobDetailsScreen() {
 
         {error && <Text style={styles.error}>{error}</Text>}
       </View>
-
-      {/* {status === "scheduled" && (
-        <Pressable onPress={handleStartJob} style={styles.actionButton}>
-          <Text style={styles.actionButtonText}>Start Job</Text>
-        </Pressable>
-      )} */}
 
       {job.status === "scheduled" && (
         <JobAction
