@@ -1,4 +1,4 @@
-import { Job, JobModel, JobStatus } from "../models/job";
+import { Job, JobModel, JobPriority, JobStatus } from "../models/job";
 
 import { transitionJobStatus } from "./job-status.service";
 
@@ -8,6 +8,24 @@ export async function getJobs(): Promise<Job[]> {
 
 export async function getJobById(id: string): Promise<Job | undefined> {
   return (await JobModel.findOne({ id }).lean<Job>()) || undefined;
+}
+
+export async function createJob(input: {
+  title: string;
+  scheduledAt: string;
+  location: string;
+  priority: JobPriority;
+}): Promise<Job> {
+  const job = await JobModel.create({
+    id: `job-${Date.now()}`,
+    title: input.title,
+    scheduledAt: input.scheduledAt,
+    location: input.location,
+    status: "scheduled",
+    priority: input.priority,
+  });
+
+  return job.toObject();
 }
 
 export async function updateJobStatus(

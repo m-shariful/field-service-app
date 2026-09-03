@@ -1,5 +1,10 @@
 import type { Request, Response } from "express";
-import { getJobById, getJobs, updateJobStatus } from "../services/job.service";
+import {
+  createJob,
+  getJobById,
+  getJobs,
+  updateJobStatus,
+} from "../services/job.service";
 
 export async function listJobs(_req: Request, res: Response) {
   res.json({
@@ -35,6 +40,45 @@ export async function getJob(req: Request, res: Response) {
   }
 
   res.json({
+    data: job,
+  });
+}
+
+const priorities = ["low", "normal", "high", "urgent"] as const;
+
+export async function createJobController(req: Request, res: Response) {
+  const { title, scheduledAt, location, priority } = req.body;
+
+  if (
+    typeof title !== "string" ||
+    typeof scheduledAt !== "string" ||
+    typeof location !== "string"
+  ) {
+    return res.status(400).json({
+      error: {
+        code: "INVALID_JOB_DATA",
+        message: "Title, scheduledAt, and location are required",
+      },
+    });
+  }
+
+  if (!priorities.includes(priority)) {
+    return res.status(400).json({
+      error: {
+        code: "INVALID_PRIORITY",
+        message: "Invalid job priority",
+      },
+    });
+  }
+
+  const job = await createJob({
+    title,
+    scheduledAt,
+    location,
+    priority,
+  });
+
+  return res.status(201).json({
     data: job,
   });
 }
