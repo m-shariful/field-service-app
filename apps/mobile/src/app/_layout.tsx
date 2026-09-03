@@ -12,6 +12,13 @@ export default function RootLayout() {
             headerShown: true,
           }}
         />
+        <Stack.Screen
+          name="jobs/create"
+          options={{
+            title: "Create Job",
+            headerShown: true,
+          }}
+        />
       </Stack>
     </SafeAreaProvider>
   );

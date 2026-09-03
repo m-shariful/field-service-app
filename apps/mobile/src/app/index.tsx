@@ -1,4 +1,5 @@
 import type { Job, JobStatus } from "@/features/jobs/types";
+import { router, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
 import {
   FlatList,
@@ -14,7 +15,6 @@ import { JobCardSkeleton } from "@/features/jobs/JobCardSkeleton";
 import { getJobs } from "@/features/jobs/jobs.repository";
 import { colors } from "@/theme/colors";
 import { spacing } from "@/theme/spacing";
-import { useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 type Filter = "all" | JobStatus;
@@ -151,7 +151,14 @@ export default function JobsScreen() {
         ListHeaderComponent={
           <View>
             <Text style={styles.title}>Jobs</Text>
+
             <Text style={styles.subtitle}>Manage your field work</Text>
+            <Pressable
+              onPress={() => router.push("/jobs/create")}
+              style={styles.createJobButton}
+            >
+              <Text style={styles.createJobButtonText}>+ Create Job</Text>
+            </Pressable>
 
             <View style={styles.summaryRow}>
               <SummaryCard
@@ -417,5 +424,18 @@ const styles = StyleSheet.create({
     height: 34,
     borderRadius: 999,
     backgroundColor: colors.skeleton,
+  },
+  createJobButton: {
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 20,
+    borderRadius: 14,
+    backgroundColor: colors.primary,
+  },
+  createJobButtonText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: colors.text.inverse,
   },
 });
