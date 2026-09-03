@@ -5,6 +5,10 @@ import {
   getJobs,
   updateJobStatus,
 } from "../services/job.service";
+import {
+  validateCreateJobInput,
+  validateUpdateJobStatusInput,
+} from "../validators/job.validator";
 
 export async function listJobs(_req: Request, res: Response) {
   res.json({
@@ -44,39 +48,20 @@ export async function getJob(req: Request, res: Response) {
   });
 }
 
-const priorities = ["low", "normal", "high", "urgent"] as const;
-
 export async function createJobController(req: Request, res: Response) {
-  const { title, scheduledAt, location, priority } = req.body;
+  const validation = validateCreateJobInput(req.body);
 
-  if (
-    typeof title !== "string" ||
-    typeof scheduledAt !== "string" ||
-    typeof location !== "string"
-  ) {
+  if (!validation.success || !validation.data) {
     return res.status(400).json({
       error: {
-        code: "INVALID_JOB_DATA",
-        message: "Title, scheduledAt, and location are required",
+        code: "VALIDATION_ERROR",
+        message: "Invalid job data",
+        details: validation.errors,
       },
     });
   }
 
-  if (!priorities.includes(priority)) {
-    return res.status(400).json({
-      error: {
-        code: "INVALID_PRIORITY",
-        message: "Invalid job priority",
-      },
-    });
-  }
-
-  const job = await createJob({
-    title,
-    scheduledAt,
-    location,
-    priority,
-  });
+  const job = await createJob(validation.data);
 
   return res.status(201).json({
     data: job,
@@ -85,7 +70,6 @@ export async function createJobController(req: Request, res: Response) {
 
 export async function updateJobStatusController(req: Request, res: Response) {
   const { id } = req.params;
-  const { status } = req.body;
 
   if (typeof id !== "string") {
     return res.status(400).json({
@@ -96,15 +80,14 @@ export async function updateJobStatusController(req: Request, res: Response) {
     });
   }
 
-  if (
-    status !== "scheduled" &&
-    status !== "in_progress" &&
-    status !== "completed"
-  ) {
+  const validation = validateUpdateJobStatusInput(req.body);
+
+  if (!validation.success || !validation.data) {
     return res.status(400).json({
       error: {
-        code: "INVALID_STATUS",
-        message: "Invalid job status",
+        code: "VALIDATION_ERROR",
+        message: "Invalid job data",
+        details: validation.errors,
       },
     });
   }
@@ -112,7 +95,7 @@ export async function updateJobStatusController(req: Request, res: Response) {
   let job;
 
   try {
-    job = await updateJobStatus(id, status);
+    job = await updateJobStatus(id, validation.data.status);
   } catch (error) {
     return res.status(400).json({
       error: {
