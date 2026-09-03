@@ -23,3 +23,29 @@ export function completeJob(status: JobStatus): JobStatus {
 
   return "completed";
 }
+
+// Learning: Keep the UI's "what action comes next?" logic
+// in one place instead of duplicating status checks in screens.
+export function getNextJobStatus(status: JobStatus): JobStatus | null {
+  if (canStartJob(status)) {
+    return "in_progress";
+  }
+
+  if (canCompleteJob(status)) {
+    return "completed";
+  }
+
+  return null;
+}
+
+export function getJobActionLabel(status: JobStatus): string | null {
+  if (canStartJob(status)) {
+    return "Start Job";
+  }
+
+  if (canCompleteJob(status)) {
+    return "Complete Job";
+  }
+
+  return null;
+}

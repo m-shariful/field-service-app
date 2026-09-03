@@ -1,9 +1,14 @@
+import {
+  getJobActionLabel,
+  getNextJobStatus,
+} from "@/features/jobs/job-status";
 import { getJobById, updateJobStatus } from "@/features/jobs/jobs.repository";
 import type { Job, JobStatus } from "@/features/jobs/types";
 import { Stack, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -107,12 +112,8 @@ export default function JobDetailsScreen() {
     );
   }
 
-  const nextStatus =
-    job.status === "scheduled"
-      ? "in_progress"
-      : job.status === "in_progress"
-        ? "completed"
-        : null;
+  const nextStatus = getNextJobStatus(job.status);
+  const actionLabel = getJobActionLabel(job.status);
 
   return (
     <>
@@ -171,11 +172,27 @@ export default function JobDetailsScreen() {
           )}
         </ScrollView>
 
-        {nextStatus && (
+        {nextStatus && actionLabel && (
           <View style={styles.actionContainer}>
             <Pressable
               disabled={isUpdating}
-              onPress={() => handleStatusUpdate(nextStatus)}
+              // onPress={() => handleStatusUpdate(nextStatus)}
+              onPress={() => {
+                Alert.alert(
+                  actionLabel,
+                  `Are you sure you want to ${actionLabel?.toLowerCase()}?`,
+                  [
+                    {
+                      text: "Cancel",
+                      style: "cancel",
+                    },
+                    {
+                      text: actionLabel,
+                      onPress: () => handleStatusUpdate(nextStatus),
+                    },
+                  ],
+                );
+              }}
               style={({ pressed }) => [
                 styles.actionButton,
                 pressed && !isUpdating && styles.actionPressed,
@@ -185,9 +202,7 @@ export default function JobDetailsScreen() {
               {isUpdating ? (
                 <ActivityIndicator color="#FFFFFF" />
               ) : (
-                <Text style={styles.actionText}>
-                  {nextStatus === "in_progress" ? "Start Job" : "Complete Job"}
-                </Text>
+                <Text style={styles.actionText}>{actionLabel}</Text>
               )}
             </Pressable>
           </View>
