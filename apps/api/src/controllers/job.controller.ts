@@ -5,47 +5,30 @@ import {
   getJobs,
   updateJobStatus,
 } from "../services/job.service";
+import { sendError, sendSuccess } from "../utils/api-response";
 import {
   validateCreateJobInput,
   validateUpdateJobStatusInput,
 } from "../validators/job.validator";
 
 export async function listJobs(_req: Request, res: Response) {
-  res.json({
-    data: await getJobs(),
-  });
+  return sendSuccess(res, await getJobs());
 }
 
 export async function getJob(req: Request, res: Response) {
   const { id } = req.params;
 
   if (typeof id !== "string") {
-    res.status(400).json({
-      error: {
-        code: "INVALID_JOB_ID",
-        message: "Invalid job id",
-      },
-    });
-
-    return;
+    return sendError(res, "INVALID_JOB_ID", "Invalid job id", 400);
   }
 
   const job = await getJobById(id);
 
   if (!job) {
-    res.status(404).json({
-      error: {
-        code: "JOB_NOT_FOUND",
-        message: "Job not found",
-      },
-    });
-
-    return;
+    return sendError(res, "JOB_NOT_FOUND", "Job not found", 404);
   }
 
-  res.json({
-    data: job,
-  });
+  return sendSuccess(res, job);
 }
 
 export async function createJobController(req: Request, res: Response) {
