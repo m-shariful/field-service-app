@@ -18,7 +18,7 @@ interface ValidationResult {
 export function validateCreateJobInput(input: unknown): ValidationResult {
   const errors: Record<string, string> = {};
 
-  if (!input || typeof input !== "object") {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
     return {
       success: false,
       errors: {
