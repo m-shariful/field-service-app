@@ -15,10 +15,11 @@ import { Schema, model } from "mongoose";
 
 export type JobStatus = "scheduled" | "in_progress" | "completed";
 
-export type JobPriority = "low" | "normal" | "high" | "urgent";
+export type JobPriority = "low" | "medium" | "high" | "urgent";
 
 export interface Job {
   id: string;
+  userId: string;
   title: string;
   scheduledAt: string;
   location: string;
@@ -32,6 +33,13 @@ const jobSchema = new Schema<Job>(
       type: String,
       required: true,
       unique: true,
+    },
+
+    // userId establishes ownership between a job and its creator.
+    userId: {
+      type: String,
+      required: true,
+      index: true,
     },
     title: {
       type: String,
@@ -52,7 +60,7 @@ const jobSchema = new Schema<Job>(
     },
     priority: {
       type: String,
-      enum: ["low", "normal", "high", "urgent"],
+      enum: ["low", "medium", "high", "urgent"],
       required: true,
     },
   },

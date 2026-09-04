@@ -17,8 +17,8 @@ const PRIORITY_CONFIG: Record<
     textColor: colors.neutral[500],
   },
 
-  normal: {
-    label: "Normal",
+  medium: {
+    label: "Medium",
     backgroundColor: colors.neutral[100],
     textColor: colors.neutral[700],
   },

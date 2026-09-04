@@ -22,7 +22,7 @@ import { useState } from "react";
 
 const PRIORITIES: { label: string; value: JobPriority }[] = [
   { label: "Low", value: "low" },
-  { label: "Normal", value: "normal" },
+  { label: "Medium", value: "medium" },
   { label: "High", value: "high" },
   { label: "Urgent", value: "urgent" },
 ];
@@ -50,7 +50,7 @@ export default function CreateJobScreen() {
   // null means that no picker is open.
   const [pickerMode, setPickerMode] = useState<PickerMode>(null);
 
-  const [priority, setPriority] = useState<JobPriority>("normal");
+  const [priority, setPriority] = useState<JobPriority>("medium");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 

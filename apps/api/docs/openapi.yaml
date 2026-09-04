@@ -2,7 +2,11 @@ openapi: 3.0.3
 
 info:
   title: Field Service API
-  description: REST API for managing field service jobs.
+  description: |
+    REST API for the Field Service Management Platform.
+
+    Authentication uses JWT bearer tokens. Users can only access and
+    modify jobs that belong to their own account.
   version: 1.0.0
 
 servers:
@@ -10,19 +14,171 @@ servers:
     description: Local development server
 
 tags:
+  - name: Authentication
+    description: User registration, login, and session information
   - name: Jobs
-    description: Field service job operations
+    description: Job management and lifecycle operations
 
 paths:
+  /api/auth/register:
+    post:
+      tags:
+        - Authentication
+      summary: Register a new user
+      description: Creates a new user account and returns a JWT access token.
+      operationId: registerUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+            example:
+              name: Shariful Alam
+              email: shariful@example.com
+              password: password123
+      responses:
+        "201":
+          description: User registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+              example:
+                data:
+                  user:
+                    id: user-1727000000000
+                    name: Shariful Alam
+                    email: shariful@example.com
+                  token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        "400":
+          description: Invalid request data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: VALIDATION_ERROR
+                  message: Invalid request data
+                  details:
+                    - field: email
+                      message: A valid email address is required
+        "409":
+          description: Email address already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: EMAIL_ALREADY_EXISTS
+                  message: A user with this email already exists
+
+  /api/auth/login:
+    post:
+      tags:
+        - Authentication
+      summary: Log in an existing user
+      description: Authenticates a user and returns a JWT access token.
+      operationId: loginUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+            example:
+              email: shariful@example.com
+              password: password123
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+              example:
+                data:
+                  user:
+                    id: user-1727000000000
+                    name: Shariful Alam
+                    email: shariful@example.com
+                  token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        "400":
+          description: Invalid request data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: VALIDATION_ERROR
+                  message: Invalid request data
+        "401":
+          description: Invalid email or password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: INVALID_CREDENTIALS
+                  message: Invalid email or password
+
+  /api/auth/me:
+    get:
+      tags:
+        - Authentication
+      summary: Get the currently authenticated user
+      description: Returns the user associated with the supplied JWT token.
+      operationId: getCurrentUser
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current user returned successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    $ref: "#/components/schemas/User"
+              example:
+                data:
+                  id: user-1727000000000
+                  name: Shariful Alam
+                  email: shariful@example.com
+        "401":
+          description: Missing or invalid authentication token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: UNAUTHORIZED
+                  message: Authentication required
+
   /api/jobs:
     get:
       tags:
         - Jobs
-      summary: List jobs
-      description: Returns all field service jobs.
+      summary: List the authenticated user's jobs
+      description: |
+        Returns only jobs belonging to the authenticated user.
+
+        The user is identified from the JWT bearer token. No userId query
+        parameter is required.
+      operationId: listJobs
+      security:
+        - bearerAuth: []
       responses:
         "200":
-          description: Jobs retrieved successfully
+          description: Jobs returned successfully
           content:
             application/json:
               schema:
@@ -34,12 +190,40 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/Job"
+              example:
+                data:
+                  - id: job-001
+                    userId: user-1727000000000
+                    title: Install office air conditioner
+                    scheduledAt: "2026-09-20T10:00:00+06:00"
+                    location: Rajshahi City
+                    status: scheduled
+                    priority: high
+                    createdAt: "2026-09-04T10:00:00.000Z"
+                    updatedAt: "2026-09-04T10:00:00.000Z"
+        "401":
+          description: Missing or invalid authentication token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: UNAUTHORIZED
+                  message: Authentication required
 
     post:
       tags:
         - Jobs
-      summary: Create a job
-      description: Creates a new field service job.
+      summary: Create a new job
+      description: |
+        Creates a job for the authenticated user.
+
+        The userId is derived from the JWT token and must not be supplied
+        in the request body.
+      operationId: createJob
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -47,8 +231,8 @@ paths:
             schema:
               $ref: "#/components/schemas/CreateJobRequest"
             example:
-              title: AC Installation
-              scheduledAt: "2026-09-15T10:00:00+06:00"
+              title: Install office air conditioner
+              scheduledAt: "2026-09-20T10:00:00+06:00"
               location: Rajshahi City
               priority: high
       responses:
@@ -63,9 +247,19 @@ paths:
                 properties:
                   data:
                     $ref: "#/components/schemas/Job"
-
+              example:
+                data:
+                  id: job-001
+                  userId: user-1727000000000
+                  title: Install office air conditioner
+                  scheduledAt: "2026-09-20T10:00:00+06:00"
+                  location: Rajshahi City
+                  status: scheduled
+                  priority: high
+                  createdAt: "2026-09-04T10:00:00.000Z"
+                  updatedAt: "2026-09-04T10:00:00.000Z"
         "400":
-          description: Invalid job data
+          description: Invalid request data
           content:
             application/json:
               schema:
@@ -73,28 +267,42 @@ paths:
               example:
                 error:
                   code: VALIDATION_ERROR
-                  message: Invalid job data
-                  details:
-                    title: Title is required
-                    priority: Priority must be low, normal, high, or urgent
+                  message: Invalid request data
+        "401":
+          description: Missing or invalid authentication token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: UNAUTHORIZED
+                  message: Authentication required
 
   /api/jobs/{id}:
     get:
       tags:
         - Jobs
-      summary: Get a job
-      description: Returns a single field service job by its ID.
+      summary: Get a job by ID
+      description: |
+        Returns a single job belonging to the authenticated user.
+
+        The userId is included in the response body. It is not a path
+        parameter because ownership is determined from the JWT token.
+      operationId: getJobById
+      security:
+        - bearerAuth: []
       parameters:
         - name: id
           in: path
           required: true
-          description: Unique job identifier.
+          description: Public job identifier
           schema:
             type: string
           example: job-001
       responses:
         "200":
-          description: Job retrieved successfully
+          description: Job returned successfully
           content:
             application/json:
               schema:
@@ -104,9 +312,29 @@ paths:
                 properties:
                   data:
                     $ref: "#/components/schemas/Job"
-
+              example:
+                data:
+                  id: job-001
+                  userId: user-1727000000000
+                  title: Install office air conditioner
+                  scheduledAt: "2026-09-20T10:00:00+06:00"
+                  location: Rajshahi City
+                  status: scheduled
+                  priority: high
+                  createdAt: "2026-09-04T10:00:00.000Z"
+                  updatedAt: "2026-09-04T10:00:00.000Z"
+        "401":
+          description: Missing or invalid authentication token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: UNAUTHORIZED
+                  message: Authentication required
         "404":
-          description: Job not found
+          description: Job not found or does not belong to the authenticated user
           content:
             application/json:
               schema:
@@ -120,13 +348,21 @@ paths:
     patch:
       tags:
         - Jobs
-      summary: Update job status
-      description: Updates a job's status according to the allowed lifecycle transitions.
+      summary: Update a job's status
+      description: |
+        Updates the status of a job belonging to the authenticated user.
+
+        Supported lifecycle transitions:
+        - scheduled → in_progress
+        - in_progress → completed
+      operationId: updateJobStatus
+      security:
+        - bearerAuth: []
       parameters:
         - name: id
           in: path
           required: true
-          description: Unique job identifier.
+          description: Public job identifier
           schema:
             type: string
           example: job-001
@@ -136,15 +372,8 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/UpdateJobStatusRequest"
-            examples:
-              startJob:
-                summary: Start a scheduled job
-                value:
-                  status: in_progress
-              completeJob:
-                summary: Complete an in-progress job
-                value:
-                  status: completed
+            example:
+              status: in_progress
       responses:
         "200":
           description: Job status updated successfully
@@ -157,32 +386,48 @@ paths:
                 properties:
                   data:
                     $ref: "#/components/schemas/Job"
-
+              example:
+                data:
+                  id: job-001
+                  userId: user-1727000000000
+                  title: Install office air conditioner
+                  scheduledAt: "2026-09-20T10:00:00+06:00"
+                  location: Rajshahi City
+                  status: in_progress
+                  priority: high
+                  createdAt: "2026-09-04T10:00:00.000Z"
+                  updatedAt: "2026-09-04T11:00:00.000Z"
         "400":
-          description: Invalid status or invalid status transition
+          description: Invalid request data or invalid status transition
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
               examples:
-                invalidStatus:
-                  summary: Invalid status value
+                validationError:
+                  summary: Invalid status
                   value:
                     error:
                       code: VALIDATION_ERROR
-                      message: Invalid job data
-                      details:
-                        status: Status must be scheduled, in_progress, or completed
-
+                      message: Invalid request data
                 invalidTransition:
                   summary: Invalid status transition
                   value:
                     error:
                       code: INVALID_STATUS_TRANSITION
-                      message: Invalid job status transition
-
+                      message: Cannot transition job from completed to in_progress
+        "401":
+          description: Missing or invalid authentication token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: UNAUTHORIZED
+                  message: Authentication required
         "404":
-          description: Job not found
+          description: Job not found or does not belong to the authenticated user
           content:
             application/json:
               schema:
@@ -193,11 +438,100 @@ paths:
                   message: Job not found
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Enter the JWT token returned by the register or login endpoint.
+
+        Format:
+        Bearer <your-jwt-token>
+
   schemas:
-    Job:
+    User:
       type: object
+      description: Public user information
       required:
         - id
+        - name
+        - email
+      properties:
+        id:
+          type: string
+          description: Public user identifier
+          example: user-1727000000000
+        name:
+          type: string
+          maxLength: 100
+          example: Shariful Alam
+        email:
+          type: string
+          format: email
+          example: shariful@example.com
+
+    RegisterRequest:
+      type: object
+      required:
+        - name
+        - email
+        - password
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: Shariful Alam
+        email:
+          type: string
+          format: email
+          example: shariful@example.com
+        password:
+          type: string
+          minLength: 8
+          format: password
+          example: password123
+
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          example: shariful@example.com
+        password:
+          type: string
+          format: password
+          example: password123
+
+    AuthResponse:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: object
+          required:
+            - user
+            - token
+          properties:
+            user:
+              $ref: "#/components/schemas/User"
+            token:
+              type: string
+              description: JWT access token
+              example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+    Job:
+      type: object
+      description: A field-service job owned by a user
+      required:
+        - id
+        - userId
         - title
         - scheduledAt
         - location
@@ -206,37 +540,51 @@ components:
       properties:
         id:
           type: string
+          description: Public job identifier
           example: job-001
-
+        userId:
+          type: string
+          description: Public identifier of the user who owns this job
+          example: user-1727000000000
         title:
           type: string
-          example: AC Maintenance
-
+          description: Job title
+          example: Install office air conditioner
         scheduledAt:
           type: string
           format: date-time
-          example: "2026-09-10T10:00:00+06:00"
-
+          description: Scheduled date and time for the job
+          example: "2026-09-20T10:00:00+06:00"
         location:
           type: string
+          description: Job location
           example: Rajshahi City
-
         status:
           type: string
+          description: Current lifecycle status
           enum:
             - scheduled
             - in_progress
             - completed
           example: scheduled
-
         priority:
           type: string
+          description: Job priority
           enum:
             - low
-            - normal
+            - medium
             - high
-            - urgent
           example: high
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+          example: "2026-09-04T10:00:00.000Z"
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+          example: "2026-09-04T10:00:00.000Z"
 
     CreateJobRequest:
       type: object
@@ -248,26 +596,20 @@ components:
       properties:
         title:
           type: string
-          maxLength: 200
-          example: AC Installation
-
+          example: Install office air conditioner
         scheduledAt:
           type: string
           format: date-time
-          example: "2026-09-15T10:00:00+06:00"
-
+          example: "2026-09-20T10:00:00+06:00"
         location:
           type: string
-          maxLength: 300
           example: Rajshahi City
-
         priority:
           type: string
           enum:
             - low
-            - normal
+            - medium
             - high
-            - urgent
           example: high
 
     UpdateJobStatusRequest:
@@ -296,13 +638,19 @@ components:
           properties:
             code:
               type: string
-              example: JOB_NOT_FOUND
-
+              example: VALIDATION_ERROR
             message:
               type: string
-              example: Job not found
-
+              example: Invalid request data
             details:
-              type: object
-              additionalProperties:
-                type: string
+              type: array
+              description: Optional validation details
+              items:
+                type: object
+                properties:
+                  field:
+                    type: string
+                    example: email
+                  message:
+                    type: string
+                    example: A valid email address is required

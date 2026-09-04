@@ -26,6 +26,9 @@ afterAll(async () => {
   await mongoServer.stop();
 });
 
+process.env.JWT_SECRET = "test-secret";
+process.env.JWT_EXPIRES_IN = "1d";
+
 // Test starts
 //    ↓
 // Temporary MongoDB

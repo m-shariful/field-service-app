@@ -2,22 +2,34 @@ import { Job, JobModel, JobPriority, JobStatus } from "../models/job";
 
 import { transitionJobStatus } from "./job-status.service";
 
-export async function getJobs(): Promise<Job[]> {
-  return await JobModel.find().lean<Job[]>();
+export async function getJobs(userId: string): Promise<Job[]> {
+  return await JobModel.find({ userId }).lean<Job[]>();
 }
 
-export async function getJobById(id: string): Promise<Job | undefined> {
-  return (await JobModel.findOne({ id }).lean<Job>()) || undefined;
+export async function getJobById(
+  id: string,
+  userId: string,
+): Promise<Job | undefined> {
+  return (
+    (await JobModel.findOne({
+      id,
+      userId,
+    }).lean<Job>()) || undefined
+  );
 }
 
-export async function createJob(input: {
-  title: string;
-  scheduledAt: string;
-  location: string;
-  priority: JobPriority;
-}): Promise<Job> {
+export async function createJob(
+  userId: string,
+  input: {
+    title: string;
+    scheduledAt: string;
+    location: string;
+    priority: JobPriority;
+  },
+): Promise<Job> {
   const job = await JobModel.create({
     id: `job-${Date.now()}`,
+    userId,
     title: input.title,
     scheduledAt: input.scheduledAt,
     location: input.location,
@@ -30,18 +42,30 @@ export async function createJob(input: {
 
 export async function updateJobStatus(
   id: string,
+  userId: string,
   newStatus: JobStatus,
 ): Promise<Job | undefined> {
-  const job = await getJobById(id);
+  const job = await getJobById(id, userId);
 
-  if (!job) return undefined;
+  if (!job) {
+    return undefined;
+  }
 
   const nextStatus = transitionJobStatus(job.status, newStatus);
 
   const updatedJob = await JobModel.findOneAndUpdate(
-    { id },
-    { $set: { status: nextStatus } },
-    { new: true },
+    {
+      id,
+      userId,
+    },
+    {
+      $set: {
+        status: nextStatus,
+      },
+    },
+    {
+      new: true,
+    },
   ).lean<Job>();
 
   return updatedJob || undefined;

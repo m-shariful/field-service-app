@@ -6,8 +6,12 @@ import {
 } from "../controllers/job.controller";
 
 import { Router } from "express";
+import { requireAuth } from "../middleware/auth";
 
 const router = Router();
+
+// every job operation requires an authenticated user.
+router.use(requireAuth);
 
 router.get("/", listJobs);
 router.post("/", createJobController);

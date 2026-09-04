@@ -1,6 +1,6 @@
 import type { JobPriority, JobStatus } from "../models/job";
 
-const JOB_PRIORITIES = ["low", "normal", "high", "urgent"] as const;
+const JOB_PRIORITIES = ["low", "medium", "high", "urgent"] as const;
 
 interface CreateJobInput {
   title: string;
@@ -53,7 +53,7 @@ export function validateCreateJobInput(input: unknown): ValidationResult {
     typeof body.priority !== "string" ||
     !JOB_PRIORITIES.includes(body.priority as JobPriority)
   ) {
-    errors.priority = "Priority must be low, normal, high, or urgent";
+    errors.priority = "Priority must be low, medium, high, or urgent";
   }
 
   if (Object.keys(errors).length > 0) {

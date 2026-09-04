@@ -1,4 +1,3 @@
-import type { Request, Response } from "express";
 import {
   createJob,
   getJobById,
@@ -11,18 +10,37 @@ import {
   validateUpdateJobStatusInput,
 } from "../validators/job.validator";
 
-export async function listJobs(_req: Request, res: Response) {
-  return sendSuccess(res, await getJobs());
+import type { Response } from "express";
+import type { AuthenticatedRequest } from "../types/auth";
+
+function getAuthenticatedUserId(req: AuthenticatedRequest): string | undefined {
+  return req.user?.id;
 }
 
-export async function getJob(req: Request, res: Response) {
+export async function listJobs(req: AuthenticatedRequest, res: Response) {
+  const userId = getAuthenticatedUserId(req);
+
+  if (!userId) {
+    return sendError(res, "UNAUTHORIZED", "Authentication required", 401);
+  }
+
+  return sendSuccess(res, await getJobs(userId));
+}
+
+export async function getJob(req: AuthenticatedRequest, res: Response) {
+  const userId = getAuthenticatedUserId(req);
+
+  if (!userId) {
+    return sendError(res, "UNAUTHORIZED", "Authentication required", 401);
+  }
+
   const { id } = req.params;
 
   if (typeof id !== "string") {
     return sendError(res, "INVALID_JOB_ID", "Invalid job id", 400);
   }
 
-  const job = await getJobById(id);
+  const job = await getJobById(id, userId);
 
   if (!job) {
     return sendError(res, "JOB_NOT_FOUND", "Job not found", 404);
@@ -31,76 +49,77 @@ export async function getJob(req: Request, res: Response) {
   return sendSuccess(res, job);
 }
 
-export async function createJobController(req: Request, res: Response) {
+export async function createJobController(
+  req: AuthenticatedRequest,
+  res: Response,
+) {
+  const userId = getAuthenticatedUserId(req);
+
+  if (!userId) {
+    return sendError(res, "UNAUTHORIZED", "Authentication required", 401);
+  }
+
   const validation = validateCreateJobInput(req.body);
 
   if (!validation.success || !validation.data) {
-    return res.status(400).json({
-      error: {
-        code: "VALIDATION_ERROR",
-        message: "Invalid job data",
-        details: validation.errors,
-      },
-    });
+    return sendError(
+      res,
+      "VALIDATION_ERROR",
+      "Invalid job data",
+      400,
+      validation.errors,
+    );
   }
 
-  const job = await createJob(validation.data);
+  const job = await createJob(userId, validation.data);
 
-  return res.status(201).json({
-    data: job,
-  });
+  return sendSuccess(res, job, 201);
 }
 
-export async function updateJobStatusController(req: Request, res: Response) {
+export async function updateJobStatusController(
+  req: AuthenticatedRequest,
+  res: Response,
+) {
+  const userId = getAuthenticatedUserId(req);
+
+  if (!userId) {
+    return sendError(res, "UNAUTHORIZED", "Authentication required", 401);
+  }
+
   const { id } = req.params;
 
   if (typeof id !== "string") {
-    return res.status(400).json({
-      error: {
-        code: "INVALID_JOB_ID",
-        message: "Invalid job id",
-      },
-    });
+    return sendError(res, "INVALID_JOB_ID", "Invalid job id", 400);
   }
 
   const validation = validateUpdateJobStatusInput(req.body);
 
   if (!validation.success || !validation.data) {
-    return res.status(400).json({
-      error: {
-        code: "VALIDATION_ERROR",
-        message: "Invalid job data",
-        details: validation.errors,
-      },
-    });
+    return sendError(
+      res,
+      "VALIDATION_ERROR",
+      "Invalid job data",
+      400,
+      validation.errors,
+    );
   }
 
   let job;
 
   try {
-    job = await updateJobStatus(id, validation.data.status);
+    job = await updateJobStatus(id, userId, validation.data.status);
   } catch (error) {
-    return res.status(400).json({
-      error: {
-        code: "INVALID_STATUS_TRANSITION",
-        message:
-          error instanceof Error
-            ? error.message
-            : "Invalid job status transition",
-      },
-    });
+    return sendError(
+      res,
+      "INVALID_STATUS_TRANSITION",
+      error instanceof Error ? error.message : "Invalid job status transition",
+      400,
+    );
   }
 
   if (!job) {
-    return res.status(404).json({
-      error: {
-        code: "JOB_NOT_FOUND",
-        message: "Job not found",
-      },
-    });
+    return sendError(res, "JOB_NOT_FOUND", "Job not found", 404);
   }
 
-  return res.json({
-    data: job,
-  });
+  return sendSuccess(res, job);
 }
