@@ -477,7 +477,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#F1F5F9",
   },
 
-  priority_normal: {
+  priority_medium: {
     backgroundColor: "#EFF6FF",
   },
 
@@ -493,7 +493,7 @@ const styles = StyleSheet.create({
     color: "#475569",
   },
 
-  priorityText_normal: {
+  priorityText_medium: {
     color: "#2563EB",
   },
 

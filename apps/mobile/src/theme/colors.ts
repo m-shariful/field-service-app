@@ -32,7 +32,7 @@ export const colors = {
 
   priority: {
     low: "#6B7280",
-    normal: "#2563EB",
+    medium: "#2563EB",
     high: "#D97706",
     urgent: "#DC2626",
   },

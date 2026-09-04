@@ -15,7 +15,7 @@ export const mockJobs: Job[] = [
     scheduledAt: "2026-08-24T14:30:00+06:00",
     location: "Rajshahi City",
     status: "in_progress",
-    priority: "normal",
+    priority: "medium",
   },
   {
     id: "job-003",

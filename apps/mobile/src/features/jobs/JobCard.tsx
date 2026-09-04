@@ -1,8 +1,8 @@
-import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { Job, JobPriority, JobStatus } from "./types";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
-import { router } from "expo-router";
 import { formatJobDate } from "./formatters";
+import { router } from "expo-router";
 
 interface JobCardProps {
   job: Job;
@@ -217,7 +217,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#F1F5F9",
   },
 
-  priority_normal: {
+  priority_medium: {
     backgroundColor: "#EFF6FF",
   },
 
@@ -233,7 +233,7 @@ const styles = StyleSheet.create({
     color: "#475569",
   },
 
-  priorityText_normal: {
+  priorityText_medium: {
     color: "#2563EB",
   },
 
