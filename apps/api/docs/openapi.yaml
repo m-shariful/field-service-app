@@ -1,0 +1,308 @@
+openapi: 3.0.3
+
+info:
+  title: Field Service API
+  description: REST API for managing field service jobs.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:5000
+    description: Local development server
+
+tags:
+  - name: Jobs
+    description: Field service job operations
+
+paths:
+  /api/jobs:
+    get:
+      tags:
+        - Jobs
+      summary: List jobs
+      description: Returns all field service jobs.
+      responses:
+        "200":
+          description: Jobs retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Job"
+
+    post:
+      tags:
+        - Jobs
+      summary: Create a job
+      description: Creates a new field service job.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateJobRequest"
+            example:
+              title: AC Installation
+              scheduledAt: "2026-09-15T10:00:00+06:00"
+              location: Rajshahi City
+              priority: high
+      responses:
+        "201":
+          description: Job created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Job"
+
+        "400":
+          description: Invalid job data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: VALIDATION_ERROR
+                  message: Invalid job data
+                  details:
+                    title: Title is required
+                    priority: Priority must be low, normal, high, or urgent
+
+  /api/jobs/{id}:
+    get:
+      tags:
+        - Jobs
+      summary: Get a job
+      description: Returns a single field service job by its ID.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Unique job identifier.
+          schema:
+            type: string
+          example: job-001
+      responses:
+        "200":
+          description: Job retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Job"
+
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: JOB_NOT_FOUND
+                  message: Job not found
+
+  /api/jobs/{id}/status:
+    patch:
+      tags:
+        - Jobs
+      summary: Update job status
+      description: Updates a job's status according to the allowed lifecycle transitions.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Unique job identifier.
+          schema:
+            type: string
+          example: job-001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateJobStatusRequest"
+            examples:
+              startJob:
+                summary: Start a scheduled job
+                value:
+                  status: in_progress
+              completeJob:
+                summary: Complete an in-progress job
+                value:
+                  status: completed
+      responses:
+        "200":
+          description: Job status updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Job"
+
+        "400":
+          description: Invalid status or invalid status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidStatus:
+                  summary: Invalid status value
+                  value:
+                    error:
+                      code: VALIDATION_ERROR
+                      message: Invalid job data
+                      details:
+                        status: Status must be scheduled, in_progress, or completed
+
+                invalidTransition:
+                  summary: Invalid status transition
+                  value:
+                    error:
+                      code: INVALID_STATUS_TRANSITION
+                      message: Invalid job status transition
+
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: JOB_NOT_FOUND
+                  message: Job not found
+
+components:
+  schemas:
+    Job:
+      type: object
+      required:
+        - id
+        - title
+        - scheduledAt
+        - location
+        - status
+        - priority
+      properties:
+        id:
+          type: string
+          example: job-001
+
+        title:
+          type: string
+          example: AC Maintenance
+
+        scheduledAt:
+          type: string
+          format: date-time
+          example: "2026-09-10T10:00:00+06:00"
+
+        location:
+          type: string
+          example: Rajshahi City
+
+        status:
+          type: string
+          enum:
+            - scheduled
+            - in_progress
+            - completed
+          example: scheduled
+
+        priority:
+          type: string
+          enum:
+            - low
+            - normal
+            - high
+            - urgent
+          example: high
+
+    CreateJobRequest:
+      type: object
+      required:
+        - title
+        - scheduledAt
+        - location
+        - priority
+      properties:
+        title:
+          type: string
+          maxLength: 200
+          example: AC Installation
+
+        scheduledAt:
+          type: string
+          format: date-time
+          example: "2026-09-15T10:00:00+06:00"
+
+        location:
+          type: string
+          maxLength: 300
+          example: Rajshahi City
+
+        priority:
+          type: string
+          enum:
+            - low
+            - normal
+            - high
+            - urgent
+          example: high
+
+    UpdateJobStatusRequest:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - scheduled
+            - in_progress
+            - completed
+          example: in_progress
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              example: JOB_NOT_FOUND
+
+            message:
+              type: string
+              example: Job not found
+
+            details:
+              type: object
+              additionalProperties:
+                type: string
