@@ -4,7 +4,7 @@ export interface User {
   id: string;
   name: string;
   email: string;
-  passwordHash: string;
+  passwordHash?: string; // optional to support OAuth
 }
 
 const userSchema = new Schema<User>(
@@ -32,7 +32,7 @@ const userSchema = new Schema<User>(
 
     passwordHash: {
       type: String,
-      required: true,
+      required: false,
     },
   },
   {

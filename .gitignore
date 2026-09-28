@@ -44,4 +44,9 @@ example
 /ios
 /android
 
+# generated native folders from mobile dir
+/apps/mobile/ios/
+/apps/mobile/android/
+
 milestone.md
+purpose.md

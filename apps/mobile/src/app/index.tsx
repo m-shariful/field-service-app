@@ -13,6 +13,7 @@ import {
 import { JobCard } from "@/features/jobs/JobCard";
 import { JobCardSkeleton } from "@/features/jobs/JobCardSkeleton";
 import { getJobs } from "@/features/jobs/jobs.repository";
+import { useAuthStore } from "@/stores/auth.store";
 import { colors } from "@/theme/colors";
 import { spacing } from "@/theme/spacing";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -43,6 +44,7 @@ function getEmptyMessage(filter: Filter) {
 }
 
 export default function JobsScreen() {
+  const signOut = useAuthStore((state) => state.signOut);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [filter, setFilter] = useState<Filter>("all");
   const [isLoading, setIsLoading] = useState(true);
@@ -150,9 +152,24 @@ export default function JobsScreen() {
         }
         ListHeaderComponent={
           <View>
-            <Text style={styles.title}>Jobs</Text>
+            <View style={styles.headerRow}>
+              <View style={styles.headerContent}>
+                <Text style={styles.title}>Jobs</Text>
 
-            <Text style={styles.subtitle}>Manage your field work</Text>
+                <Text style={styles.subtitle}>Manage your field work</Text>
+              </View>
+
+              <Pressable
+                onPress={signOut}
+                style={({ pressed }) => [
+                  styles.signOutButton,
+                  pressed && styles.filterPressed,
+                ]}
+              >
+                <Text style={styles.signOutButtonText}>Sign Out</Text>
+              </Pressable>
+            </View>
+
             <Pressable
               onPress={() => router.push("/jobs/create")}
               style={styles.createJobButton}
@@ -437,5 +454,32 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
     color: colors.text.inverse,
+  },
+
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: spacing.md,
+  },
+
+  headerContent: {
+    flex: 1,
+  },
+
+  signOutButton: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    marginTop: spacing.lg,
+  },
+
+  signOutButtonText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: colors.text.secondary,
   },
 });
