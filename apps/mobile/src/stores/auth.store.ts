@@ -1,12 +1,23 @@
 import { create } from "zustand";
 
-import { ApiError } from "@/api/api-error";
-import { getCurrentUser, type AuthResponse, type AuthUser } from "@/api/auth";
+import { setUnauthorizedHandler } from "@/api/client";
+
+import { getCurrentUser, type AuthResponse } from "@/api/auth";
+
+import { authDebug } from "@/debug/auth-debug";
+
 import {
-  clearAccessToken,
+  clearSessionTokens,
   getAccessToken,
-  saveAccessToken,
+  getRefreshToken,
+  saveSessionTokens,
 } from "@/storage/auth-storage";
+
+interface AuthUser {
+  id: string;
+  name: string;
+  email: string;
+}
 
 interface AuthState {
   user: AuthUser | null;
@@ -24,81 +35,184 @@ interface AuthState {
   signOut: () => Promise<void>;
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
-  user: null,
-  isAuthenticated: false,
-  isLoading: true,
-
-  initializeAuth: async () => {
-    console.log("=== Auth initialization started ===");
-
-    set({
-      isLoading: true,
-    });
+export const useAuthStore = create<AuthState>((set) => {
+  const signOut = async () => {
+    authDebug("LOGOUT_START");
 
     try {
-      const accessToken = await getAccessToken();
+      const refreshToken = await getRefreshToken();
 
-      console.log("Perisisted access token exists:", Boolean(accessToken));
-
-      if (!accessToken) {
-        set({
-          user: null,
-          isAuthenticated: false,
-          isLoading: false,
+      if (refreshToken) {
+        authDebug("SERVER_LOGOUT_REQUEST", {
+          hasRefreshToken: true,
         });
 
-        console.log("No persisted session found.");
+        try {
+          // Avoids creating an unnecessary top-level circular dependency while we're still finishing the auth refactor.
+          const { apiPostPublic } = await import("@/api/client");
 
-        return;
+          await apiPostPublic("/api/auth/logout", {
+            refreshToken,
+          });
+
+          authDebug("SERVER_LOGOUT_SUCCESS");
+        } catch (error) {
+          /**
+           * Learning:
+           * Logout is intentionally best-effort on the server.
+           *
+           * Even if the network is unavailable,
+           * local credentials must be removed.
+           */
+          authDebug("SERVER_LOGOUT_FAILED", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
+    } finally {
+      await clearSessionTokens();
 
-      const response = await getCurrentUser();
-
-      console.log("Session restored from /api/auth/me: ", response.data);
-
-      set({
-        user: response.data,
-        isAuthenticated: true,
-        isLoading: false,
-      });
-
-      console.log("=== Auth initialization completed ===");
-    } catch (error) {
-      console.log("Auth initialization failed:", error);
-
-      // Learning: a 401 means the locally persisted credential
-      // is no longer a valid application session.
-      if (error instanceof ApiError && error.status === 401) {
-        await clearAccessToken();
-        console.log("Invalid persisted token cleared.");
-      }
+      authDebug("LOCAL_TOKENS_CLEARED");
 
       set({
         user: null,
         isAuthenticated: false,
         isLoading: false,
       });
+
+      authDebug("SESSION_SIGNED_OUT");
     }
-  },
+  };
 
-  setSession: async (authResponse) => {
-    await saveAccessToken(authResponse.data.token);
+  /**
+   * Learning:
+   *
+   * API client owns token refresh.
+   * Auth store owns the application-level session state.
+   *
+   * When the API client determines that the session
+   * is no longer recoverable, it calls this handler.
+   */
+  setUnauthorizedHandler(async () => {
+    authDebug("UNAUTHORIZED_HANDLER_TRIGGERED");
 
-    set({
-      user: authResponse.data.user,
-      isAuthenticated: true,
-      isLoading: false,
-    });
-  },
+    await signOut();
+  });
 
-  signOut: async () => {
-    await clearAccessToken();
+  return {
+    user: null,
+    isAuthenticated: false,
+    isLoading: true,
 
-    set({
-      user: null,
-      isAuthenticated: false,
-      isLoading: false,
-    });
-  },
-}));
+    initializeAuth: async () => {
+      authDebug("INITIALIZE_START");
+
+      try {
+        set({
+          isLoading: true,
+        });
+
+        const accessToken = await getAccessToken();
+
+        const refreshToken = await getRefreshToken();
+
+        authDebug("PERSISTED_SESSION_CHECK", {
+          hasAccessToken: Boolean(accessToken),
+          hasRefreshToken: Boolean(refreshToken),
+        });
+
+        if (!accessToken || !refreshToken) {
+          authDebug("INCOMPLETE_SESSION_FOUND");
+
+          await clearSessionTokens();
+
+          set({
+            user: null,
+            isAuthenticated: false,
+            isLoading: false,
+          });
+
+          authDebug("INITIALIZE_NO_SESSION");
+
+          return;
+        }
+
+        try {
+          /**
+           * Learning:
+           *
+           * If the access token has expired,
+           * apiGet() -> 401 -> refresh -> retry
+           *
+           * So initializeAuth does not need to manually
+           * implement token refresh.
+           */
+          const response = await getCurrentUser();
+
+          set({
+            user: response.data,
+            isAuthenticated: true,
+            isLoading: false,
+          });
+
+          authDebug("SESSION_RESTORED", {
+            userId: response.data.id,
+          });
+        } catch (error) {
+          authDebug("SESSION_RESTORE_FAILED", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+
+          await clearSessionTokens();
+
+          set({
+            user: null,
+            isAuthenticated: false,
+            isLoading: false,
+          });
+        }
+      } catch (error) {
+        authDebug("INITIALIZE_FAILED", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+
+        await clearSessionTokens();
+
+        set({
+          user: null,
+          isAuthenticated: false,
+          isLoading: false,
+        });
+      }
+    },
+
+    setSession: async (authResponse: AuthResponse) => {
+      const { user, accessToken, refreshToken } = authResponse.data;
+
+      authDebug("SESSION_RECEIVED", {
+        userId: user.id,
+        accessToken,
+        refreshToken,
+      });
+
+      await saveSessionTokens(accessToken, refreshToken);
+
+      authDebug("SESSION_TOKENS_SAVED", {
+        hasAccessToken: Boolean(accessToken),
+        hasRefreshToken: Boolean(refreshToken),
+      });
+
+      set({
+        user,
+        isAuthenticated: true,
+        isLoading: false,
+      });
+
+      authDebug("SESSION_ACTIVE", {
+        userId: user.id,
+      });
+    },
+
+    signOut,
+  };
+});

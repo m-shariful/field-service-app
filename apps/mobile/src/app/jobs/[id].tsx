@@ -34,8 +34,6 @@ export default function JobDetailsScreen() {
       try {
         if (refresh) {
           setIsRefreshing(true);
-        } else {
-          setIsLoading(true);
         }
 
         setError(null);

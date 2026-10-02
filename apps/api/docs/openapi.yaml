@@ -5,8 +5,9 @@ info:
   description: |
     REST API for the Field Service Management Platform.
 
-    Authentication uses JWT bearer tokens. Users can only access and
-    modify jobs that belong to their own account.
+    Authentication uses short-lived JWT access tokens and rotating opaque
+    refresh tokens. Users can only access and modify jobs that belong to
+    their own account.
   version: 1.0.0
 
 servers:
@@ -25,7 +26,7 @@ paths:
       tags:
         - Authentication
       summary: Register a new user
-      description: Creates a new user account and returns a JWT access token.
+      description: Creates a new user account and returns an access token and refresh token.
       operationId: registerUser
       requestBody:
         required: true
@@ -50,7 +51,8 @@ paths:
                     id: user-1727000000000
                     name: Shariful Alam
                     email: shariful@example.com
-                  token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+                  accessToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+                  refreshToken: v4YQ3...long-random-token
         "400":
           description: Invalid request data
           content:
@@ -80,7 +82,7 @@ paths:
       tags:
         - Authentication
       summary: Log in an existing user
-      description: Authenticates a user and returns a JWT access token.
+      description: Authenticates a user and returns an access token and refresh token.
       operationId: loginUser
       requestBody:
         required: true
@@ -104,7 +106,8 @@ paths:
                     id: user-1727000000000
                     name: Shariful Alam
                     email: shariful@example.com
-                  token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+                  accessToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+                  refreshToken: v4YQ3...long-random-token
         "400":
           description: Invalid request data
           content:
@@ -126,12 +129,70 @@ paths:
                   code: INVALID_CREDENTIALS
                   message: Invalid email or password
 
+  /api/auth/google:
+    post:
+      tags:
+        - Authentication
+      summary: Authenticate with Google
+      description: Verifies a Google ID token and creates or reuses the application user session.
+      operationId: loginWithGoogle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GoogleAuthRequest"
+            example:
+              idToken: eyJhbGciOiJSUzI1NiIsImtpZCI6...
+      responses:
+        "200":
+          description: Google authentication successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+              example:
+                data:
+                  user:
+                    id: user-1727000000000
+                    name: Shariful Alam
+                    email: shariful@example.com
+                  accessToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+                  refreshToken: v4YQ3...long-random-token
+        "400":
+          description: Invalid request data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: VALIDATION_ERROR
+                  message: Invalid request data
+        "401":
+          description: Invalid Google ID token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidGoogleToken:
+                  value:
+                    error:
+                      code: INVALID_GOOGLE_TOKEN
+                      message: Invalid Google authentication token
+                accountLinkRequired:
+                  value:
+                    error:
+                      code: ACCOUNT_LINK_REQUIRED
+                      message: An account already exists with this email. Sign in using the existing account before linking Google.
+
   /api/auth/me:
     get:
       tags:
         - Authentication
       summary: Get the currently authenticated user
-      description: Returns the user associated with the supplied JWT token.
+      description: Returns the user associated with the supplied JWT access token.
       operationId: getCurrentUser
       security:
         - bearerAuth: []
@@ -437,6 +498,101 @@ paths:
                   code: JOB_NOT_FOUND
                   message: Job not found
 
+  /api/auth/refresh:
+    post:
+      tags:
+        - Authentication
+      summary: Rotate a refresh token
+      description: |
+        Exchanges a valid refresh token for a new short-lived access token
+        and a new refresh token.
+
+        Refresh tokens are single-use and are rotated on every successful
+        refresh. The previous refresh token is invalidated.
+      operationId: refreshSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshTokenRequest"
+            example:
+              refreshToken: v4YQ3...long-random-token
+      responses:
+        "200":
+          description: Session refreshed successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPairResponse"
+              example:
+                data:
+                  accessToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+                  refreshToken: x8K2...new-rotated-token
+        "400":
+          description: Invalid request data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Refresh session is invalid, expired, revoked, or reused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidRefreshToken:
+                  value:
+                    error:
+                      code: INVALID_REFRESH_TOKEN
+                      message: Session is no longer valid. Please sign in again.
+                refreshTokenReuse:
+                  value:
+                    error:
+                      code: REFRESH_TOKEN_REUSE_DETECTED
+                      message: Refresh session reuse detected. Please sign in again.
+
+  /api/auth/logout:
+    post:
+      tags:
+        - Authentication
+      summary: Log out the current refresh session
+      description: Revokes the supplied refresh session on the server.
+      operationId: logout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshTokenRequest"
+            example:
+              refreshToken: v4YQ3...long-random-token
+      responses:
+        "200":
+          description: Logout completed
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    type: object
+                    required:
+                      - success
+                    properties:
+                      success:
+                        type: boolean
+                        example: true
+        "400":
+          description: Invalid request data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -444,10 +600,14 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        Enter the JWT token returned by the register or login endpoint.
+        Enter the short-lived JWT access token returned by the register,
+        login, or Google authentication endpoint.
+
+        Refresh tokens are not bearer tokens and are sent to the refresh
+        endpoint in the request body.
 
         Format:
-        Bearer <your-jwt-token>
+        Bearer <your-access-token>
 
   schemas:
     User:
@@ -508,6 +668,51 @@ components:
           format: password
           example: password123
 
+    GoogleAuthRequest:
+      type: object
+      required:
+        - idToken
+      properties:
+        idToken:
+          type: string
+          description: Google-issued ID token obtained from the Google Sign-In flow.
+          minLength: 1
+          example: eyJhbGciOiJSUzI1NiIsImtpZCI6...
+
+    RefreshTokenRequest:
+      type: object
+      required:
+        - refreshToken
+      properties:
+        refreshToken:
+          type: string
+          description: Opaque rotating refresh token.
+          minLength: 1
+          example: v4YQ3...long-random-token
+
+    TokenPair:
+      type: object
+      required:
+        - accessToken
+        - refreshToken
+      properties:
+        accessToken:
+          type: string
+          description: Short-lived JWT access token used to authenticate API requests.
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        refreshToken:
+          type: string
+          description: Opaque refresh token used to obtain a new access token. Rotated after each successful refresh.
+          example: v4YQ3...long-random-token
+
+    TokenPairResponse:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          $ref: "#/components/schemas/TokenPair"
+
     AuthResponse:
       type: object
       required:
@@ -517,14 +722,19 @@ components:
           type: object
           required:
             - user
-            - token
+            - accessToken
+            - refreshToken
           properties:
             user:
               $ref: "#/components/schemas/User"
-            token:
+            accessToken:
               type: string
-              description: JWT access token
+              description: Short-lived JWT access token used to authenticate API requests.
               example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+            refreshToken:
+              type: string
+              description: Opaque refresh token used to obtain a new access token. Rotated after each successful refresh.
+              example: v4YQ3...long-random-token
 
     Job:
       type: object
@@ -574,6 +784,7 @@ components:
             - low
             - medium
             - high
+            - urgent
           example: high
         createdAt:
           type: string
@@ -610,6 +821,7 @@ components:
             - low
             - medium
             - high
+            - urgent
           example: high
 
     UpdateJobStatusRequest:

@@ -45,17 +45,21 @@ async function createTestUser(name: string, email: string) {
 
   return {
     user: response.body.data.user,
-    token: response.body.data.token,
+    accesstoken: response.body.data.accessToken,
+    refreshToken: response.body.data.refreshToken,
   };
 }
 
 describe("GET /api/jobs", () => {
   it("returns an empty job list when no jobs exist", async () => {
-    const { token } = await createTestUser("Test User", "job@example.com");
+    const { accesstoken } = await createTestUser(
+      "Test User",
+      "job@example.com",
+    );
 
     const response = await request(app)
       .get("/api/jobs")
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${accesstoken}`);
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({
@@ -64,7 +68,7 @@ describe("GET /api/jobs", () => {
   });
 
   it("returns jobs from the database", async () => {
-    const { user, token } = await createTestUser(
+    const { user, accesstoken } = await createTestUser(
       "Test User",
       "job@example.com",
     );
@@ -80,7 +84,7 @@ describe("GET /api/jobs", () => {
 
     const response = await request(app)
       .get("/api/jobs")
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${accesstoken}`);
 
     expect(response.status).toBe(200);
     expect(response.body.data).toHaveLength(1);
@@ -108,7 +112,7 @@ describe("GET /api/jobs", () => {
 // Get job by ID
 describe("GET /api/jobs/:id", () => {
   it("returns a job when the job exists", async () => {
-    const { user, token } = await createTestUser(
+    const { user, accesstoken } = await createTestUser(
       "Test User",
       "job@example.com",
     );
@@ -125,7 +129,7 @@ describe("GET /api/jobs/:id", () => {
 
     const response = await request(app)
       .get("/api/jobs/job-test-002")
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${accesstoken}`);
 
     expect(response.status).toBe(200);
 
@@ -141,11 +145,14 @@ describe("GET /api/jobs/:id", () => {
   });
 
   it("returns 404 when the job does not exist", async () => {
-    const { token } = await createTestUser("Test User", "job@example.com");
+    const { accesstoken } = await createTestUser(
+      "Test User",
+      "job@example.com",
+    );
 
     const response = await request(app)
       .get("/api/jobs/job-does-not-exist")
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${accesstoken}`);
 
     expect(response.status).toBe(404);
 
@@ -161,7 +168,10 @@ describe("GET /api/jobs/:id", () => {
 // Create job
 describe("POST /api/jobs", () => {
   it("creates a job with valid input", async () => {
-    const { token } = await createTestUser("Test User", "job@example.com");
+    const { accesstoken } = await createTestUser(
+      "Test User",
+      "job@example.com",
+    );
     const response = await request(app)
       .post("/api/jobs")
       .send({
@@ -170,7 +180,7 @@ describe("POST /api/jobs", () => {
         location: "Rajshahi City",
         priority: "high",
       })
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${accesstoken}`);
 
     expect(response.status).toBe(201);
 
@@ -193,7 +203,10 @@ describe("POST /api/jobs", () => {
   });
 
   it("rejects invalid job input", async () => {
-    const { token } = await createTestUser("Test User", "job@example.com");
+    const { accesstoken } = await createTestUser(
+      "Test User",
+      "job@example.com",
+    );
     const response = await request(app)
       .post("/api/jobs")
       .send({
@@ -202,7 +215,7 @@ describe("POST /api/jobs", () => {
         location: "",
         priority: "critical",
       })
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${accesstoken}`);
 
     expect(response.status).toBe(400);
 
@@ -222,11 +235,14 @@ describe("POST /api/jobs", () => {
 
   // Test suite with malformed request-body coverage. This protects the API boundary against clients sending empty, missing, or incorrectly typed payloads.
   it("rejects an empty request body", async () => {
-    const { token } = await createTestUser("Test User", "job@example.com");
+    const { accesstoken } = await createTestUser(
+      "Test User",
+      "job@example.com",
+    );
     const response = await request(app)
       .post("/api/jobs")
       .send({})
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${accesstoken}`);
 
     expect(response.status).toBe(400);
 
@@ -245,11 +261,14 @@ describe("POST /api/jobs", () => {
   });
 
   it("rejects a non-object request body", async () => {
-    const { token } = await createTestUser("Test User", "job@example.com");
+    const { accesstoken } = await createTestUser(
+      "Test User",
+      "job@example.com",
+    );
     const response = await request(app)
       .post("/api/jobs")
       .send([])
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${accesstoken}`);
 
     expect(response.status).toBe(400);
 
@@ -268,7 +287,7 @@ describe("POST /api/jobs", () => {
 // Update job status
 describe("PATCH /api/jobs/:id/status", () => {
   it("moves a scheduled job to in_progress", async () => {
-    const { user, token } = await createTestUser(
+    const { user, accesstoken } = await createTestUser(
       "Test User",
       "job@example.com",
     );
@@ -287,7 +306,7 @@ describe("PATCH /api/jobs/:id/status", () => {
       .send({
         status: "in_progress",
       })
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${accesstoken}`);
 
     expect(response.status).toBe(200);
 
@@ -304,7 +323,7 @@ describe("PATCH /api/jobs/:id/status", () => {
   });
 
   it("moves an in_progress job to completed", async () => {
-    const { user, token } = await createTestUser(
+    const { user, accesstoken } = await createTestUser(
       "Test User",
       "job@example.com",
     );
@@ -323,7 +342,7 @@ describe("PATCH /api/jobs/:id/status", () => {
       .send({
         status: "completed",
       })
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${accesstoken}`);
 
     expect(response.status).toBe(200);
 
@@ -334,13 +353,16 @@ describe("PATCH /api/jobs/:id/status", () => {
   });
 
   it("rejects an invalid status value", async () => {
-    const { token } = await createTestUser("Test User", "job@example.com");
+    const { accesstoken } = await createTestUser(
+      "Test User",
+      "job@example.com",
+    );
     const response = await request(app)
       .patch("/api/jobs/job-status-003/status")
       .send({
         status: "cancelled",
       })
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${accesstoken}`);
 
     expect(response.status).toBe(400);
 
@@ -356,7 +378,7 @@ describe("PATCH /api/jobs/:id/status", () => {
   });
 
   it("rejects an invalid status transition", async () => {
-    const { user, token } = await createTestUser(
+    const { user, accesstoken } = await createTestUser(
       "Test User",
       "job@example.com",
     );
@@ -375,7 +397,7 @@ describe("PATCH /api/jobs/:id/status", () => {
       .send({
         status: "completed",
       })
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${accesstoken}`);
 
     expect(response.status).toBe(400);
 
@@ -387,13 +409,16 @@ describe("PATCH /api/jobs/:id/status", () => {
   });
 
   it("returns 404 when updating a nonexistent job", async () => {
-    const { token } = await createTestUser("Test User", "job@example.com");
+    const { accesstoken } = await createTestUser(
+      "Test User",
+      "job@example.com",
+    );
     const response = await request(app)
       .patch("/api/jobs/job-does-not-exist/status")
       .send({
         status: "in_progress",
       })
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${accesstoken}`);
 
     expect(response.status).toBe(404);
 
@@ -407,11 +432,14 @@ describe("PATCH /api/jobs/:id/status", () => {
 
   // malformed-body tests
   it("rejects an empty status request body", async () => {
-    const { token } = await createTestUser("Test User", "job@example.com");
+    const { accesstoken } = await createTestUser(
+      "Test User",
+      "job@example.com",
+    );
     const response = await request(app)
       .patch("/api/jobs/job-status-005/status")
       .send({})
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${accesstoken}`);
 
     expect(response.status).toBe(400);
 
@@ -445,7 +473,7 @@ describe("Job ownership", () => {
 
     const response = await request(app)
       .get("/api/jobs/job-owned-by-owner")
-      .set("Authorization", `Bearer ${otherUser.token}`);
+      .set("Authorization", `Bearer ${otherUser.accesstoken}`);
 
     expect(response.status).toBe(404);
 

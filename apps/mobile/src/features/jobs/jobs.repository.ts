@@ -1,15 +1,15 @@
 import { apiGet, apiPatch, apiPost } from "@/api/client";
 import type { Job, JobPriority } from "./types";
 
-interface JobsResponse {
+export interface JobsResponse {
   data: Job[];
 }
 
-interface JobResponse {
+export interface JobResponse {
   data: Job;
 }
 
-interface CreateJobInput {
+export interface CreateJobInput {
   title: string;
   scheduledAt: string;
   location: string;

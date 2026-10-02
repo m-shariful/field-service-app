@@ -1,3 +1,4 @@
+import { login, loginWithGoogle } from "@/api/auth";
 import {
   ActivityIndicator,
   Alert,
@@ -8,14 +9,13 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { login, loginWithGoogle } from "@/api/auth";
 
 import { ApiError } from "@/api/api-error";
-import { Link } from "expo-router";
-import { colors } from "@/theme/colors";
 import { signInWithGoogle } from "@/services/google-auth";
-import { spacing } from "@/theme/spacing";
 import { useAuthStore } from "@/stores/auth.store";
+import { colors } from "@/theme/colors";
+import { spacing } from "@/theme/spacing";
+import { Link } from "expo-router";
 import { useState } from "react";
 
 export default function LoginScreen() {
@@ -164,7 +164,7 @@ export default function LoginScreen() {
             />
           )}
 
-          <Text style={styles.switchText}>Don't have an account?</Text>
+          <Text style={styles.switchText}>Don&apos;t have an account?</Text>
 
           <Link href="/register" asChild>
             <Pressable

@@ -1,4 +1,4 @@
-import { apiGet, apiPost } from "./client";
+import { apiGet, apiPostPublic } from "./client";
 
 export interface AuthUser {
   id: string;
@@ -9,7 +9,8 @@ export interface AuthUser {
 export interface AuthResponse {
   data: {
     user: AuthUser;
-    token: string;
+    accessToken: string;
+    refreshToken: string;
   };
 }
 
@@ -29,16 +30,26 @@ export interface LoginInput {
 }
 
 export async function register(input: RegisterInput): Promise<AuthResponse> {
-  return apiPost<AuthResponse>("/api/auth/register", input);
+  return apiPostPublic<AuthResponse>("/api/auth/register", input);
 }
 
 export async function login(input: LoginInput): Promise<AuthResponse> {
-  return apiPost<AuthResponse>("/api/auth/login", input);
+  return apiPostPublic<AuthResponse>("/api/auth/login", input);
 }
 
 export async function loginWithGoogle(idToken: string): Promise<AuthResponse> {
-  return apiPost<AuthResponse>("/api/auth/google", {
+  return apiPostPublic<AuthResponse>("/api/auth/google", {
     idToken,
+  });
+}
+
+export async function logout(refreshToken: string): Promise<void> {
+  await apiPostPublic<{
+    data: {
+      success: boolean;
+    };
+  }>("/api/auth/logout", {
+    refreshToken,
   });
 }
 

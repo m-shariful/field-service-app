@@ -2,6 +2,8 @@ import type { RequestHandler, Response } from "express";
 import {
   loginUser,
   loginWithGoogle,
+  logoutUser,
+  refreshSession,
   registerUser,
 } from "../services/auth.service";
 import { sendError, sendSuccess } from "../utils/api-response";
@@ -12,6 +14,7 @@ import {
 
 import type { AuthenticatedRequest } from "../types/auth";
 import { validateGoogleAuthInput } from "../validators/google-auth.validator";
+import { validateRefreshTokenInput } from "../validators/refresh-token.validator";
 
 export async function registerController(
   req: AuthenticatedRequest,
@@ -102,8 +105,6 @@ export const googleAuthController: RequestHandler = async (req, res) => {
     res.status(200).json({
       data: result,
     });
-
-    return;
   } catch (error) {
     if (error instanceof Error && error.message === "INVALID_GOOGLE_TOKEN") {
       res.status(401).json({
@@ -175,6 +176,73 @@ export const googleAuthController: RequestHandler = async (req, res) => {
       },
     });
   }
+};
+
+export const refreshController: RequestHandler = async (req, res) => {
+  const validation = validateRefreshTokenInput(req.body);
+
+  if (!validation.success || !validation.data) {
+    res.status(400).json({
+      error: {
+        code: "VALIDATION_ERROR",
+        message: "Invalid refresh token data",
+        details: validation.errors,
+      },
+    });
+
+    return;
+  }
+
+  try {
+    const result = await refreshSession(validation.data.refreshToken);
+
+    res.status(200).json({
+      data: result,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "REFRESH_TOKEN_REUSED") {
+      console.warn("Refresh-token reuse caused session-family revocation.");
+    }
+
+    if (
+      error instanceof Error &&
+      (error.message === "INVALID_REFRESH_TOKEN" ||
+        error.message === "REFRESH_TOKEN_REUSED")
+    ) {
+      res.status(401).json({
+        error: {
+          code: "INVALID_REFRESH_TOKEN",
+          message: "Session is no longer valid. Please sign in again.",
+        },
+      });
+
+      return;
+    }
+
+    throw error;
+  }
+};
+
+export const logoutController: RequestHandler = async (req, res) => {
+  const validation = validateRefreshTokenInput(req.body);
+
+  if (!validation.success || !validation.data) {
+    res.status(400).json({
+      error: {
+        code: "VALIDATION_ERROR",
+        message: "Invalid logout data",
+        details: validation.errors,
+      },
+    });
+
+    return;
+  }
+
+  await logoutUser(validation.data.refreshToken);
+
+  sendSuccess(res, {
+    success: true,
+  });
 };
 
 export function meController(req: AuthenticatedRequest, res: Response) {

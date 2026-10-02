@@ -4,6 +4,7 @@ export type JobPriority = "low" | "medium" | "high" | "urgent";
 
 export interface Job {
   id: string;
+  userId: string;
   title: string;
   scheduledAt: string;
   location: string;
