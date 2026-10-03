@@ -1,12 +1,4 @@
 import {
-  getJobActionLabel,
-  getNextJobStatus,
-} from "@/features/jobs/job-status";
-import { getJobById, updateJobStatus } from "@/features/jobs/jobs.repository";
-import type { Job, JobStatus } from "@/features/jobs/types";
-import { Stack, useLocalSearchParams } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
-import {
   ActivityIndicator,
   Alert,
   Pressable,
@@ -16,6 +8,14 @@ import {
   Text,
   View,
 } from "react-native";
+import type { Job, JobStatus } from "@/features/jobs/types";
+import { Stack, useLocalSearchParams } from "expo-router";
+import {
+  getJobActionLabel,
+  getNextJobStatus,
+} from "@/features/jobs/job-status";
+import { getJobById, updateJobStatus } from "@/features/jobs/jobs.repository";
+import { useCallback, useEffect, useState } from "react";
 
 import { ApiError } from "@/api/api-error";
 import { formatJobDate } from "@/features/jobs/formatters";
@@ -29,6 +29,10 @@ export default function JobDetailsScreen() {
   const [isUpdating, setIsUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const fetchJob = useCallback(async () => {
+    return getJobById(id);
+  }, [id]);
+
   const loadJob = useCallback(
     async (refresh = false) => {
       try {
@@ -38,7 +42,8 @@ export default function JobDetailsScreen() {
 
         setError(null);
 
-        const data = await getJobById(id);
+        const data = await fetchJob();
+
         setJob(data);
       } catch (error) {
         setError(
@@ -51,12 +56,43 @@ export default function JobDetailsScreen() {
         setIsRefreshing(false);
       }
     },
-    [id],
+    [fetchJob],
   );
 
   useEffect(() => {
-    loadJob();
-  }, [loadJob]);
+    let cancelled = false;
+
+    fetchJob()
+      .then((data) => {
+        if (cancelled) {
+          return;
+        }
+
+        setJob(data);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+
+        setError(
+          error instanceof ApiError
+            ? error.message
+            : "Failed to load this job.",
+        );
+      })
+      .finally(() => {
+        if (cancelled) {
+          return;
+        }
+
+        setIsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchJob]);
 
   async function handleStatusUpdate(status: JobStatus) {
     try {

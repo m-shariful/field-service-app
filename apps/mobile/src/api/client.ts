@@ -5,8 +5,8 @@ import {
   saveSessionTokens,
 } from "@/storage/auth-storage";
 
-import { authDebug } from "@/debug/auth-debug";
 import { ApiError } from "./api-error";
+import { authDebug } from "@/debug/auth-debug";
 
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL;
 
@@ -240,11 +240,15 @@ async function performRefreshAccessToken(): Promise<RefreshResult> {
 
 async function refreshAccessToken(): Promise<RefreshResult> {
   if (!refreshPromise) {
-    refreshPromise = performRefreshAccessToken();
-
-    refreshPromise.finally(() => {
-      refreshPromise = null;
-    });
+    refreshPromise = performRefreshAccessToken()
+      .then((result) => {
+        refreshPromise = null;
+        return result;
+      })
+      .catch((error) => {
+        refreshPromise = null;
+        throw error;
+      });
   }
 
   return refreshPromise;
