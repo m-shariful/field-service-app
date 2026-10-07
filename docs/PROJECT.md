@@ -2,12 +2,9 @@
 
 ## Project Goal
 
-Build a production-oriented, offline-first field service mobile
-application using React Native, Expo, TypeScript, and a RESTful backend.
+Build a production-oriented, offline-first field service mobile application using React Native, Expo, TypeScript, and a RESTful backend.
 
-The application is designed around real-world workflows for
-field-based professionals such as technicians, engineers, and
-construction/service teams.
+The application is designed around real-world workflows for field-based professionals such as technicians, engineers, and service teams.
 
 ## Primary Goals
 
@@ -50,31 +47,33 @@ construction/service teams.
 - Expo
 - TypeScript
 - Zustand
-- Local database
+- SQLite / local persistence for the offline-first milestone
 
 ### Backend
 
 - Node.js
 - Express
 - TypeScript
-- PostgreSQL
-- Redis
+- MongoDB
+- Mongoose
 
 ### Development
 
 - Git
 - GitHub
-- Testing
+- Vitest
+- Supertest
+- OpenAPI / Swagger
 - CI/CD
 - Expo Application Services
 
 ## Current Phase
 
-Project initialization.
+Authentication baseline completed; moving into the offline-first local persistence milestone.
 
 ## Current Milestone
 
-Repository and project architecture setup.
+Authentication documentation and branch-history cleanup.
 
 ## Completed
 
@@ -82,21 +81,41 @@ Repository and project architecture setup.
 - [x] Repository cloned locally
 - [x] Initial Git commit exists
 - [x] Project documentation structure created
+- [x] Backend API initialized
+- [x] Jobs API implemented
+- [x] Job ownership implemented
+- [x] Email/password authentication
+- [x] Google authentication
+- [x] Access-token / refresh-token session model
+- [x] Refresh-token rotation and reuse detection
+- [x] Mobile session persistence and restoration
+- [x] OpenAPI / Swagger authentication documentation
+- [x] Authentication refresh-mutex hardening
 
 ## In Progress
 
-- [ ] Define architecture
-- [ ] Initialize React Native/Expo application
-- [ ] Initialize backend
-- [ ] Establish development workflow
+- [ ] Finalize authentication documentation on `main`
+- [ ] Remove authentication-only history from `feature/offline-local-db`
+- [ ] Restore the stashed Offline-Local-DB work
 
 ## Next
 
-1. Finalize architecture documentation.
-2. Initialize the mobile application.
-3. Initialize the backend API.
-4. Establish the first working vertical slice.
+1. Finish authentication documentation on `main`.
+2. Clean the feature branch history.
+3. Restore the Offline-Local-DB stash.
+4. Complete and test the first SQLite persistence slice.
+5. Continue toward synchronization and conflict resolution.
 
-## Latest Commit
+## Authentication Baseline
 
-5d9dc76 - first commit
+The canonical detailed authentication design is documented in:
+
+```text
+docs/AUTHENTICATION.md
+```
+
+The machine-readable API contract is:
+
+```text
+apps/api/docs/openapi.yaml
+```
