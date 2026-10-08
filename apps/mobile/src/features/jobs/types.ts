@@ -10,4 +10,6 @@ export interface Job {
   location: string;
   status: JobStatus;
   priority: JobPriority;
+  createdAt: string;
+  updatedAt: string;
 }

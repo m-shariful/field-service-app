@@ -9,6 +9,8 @@ export const mockJobs: Job[] = [
     location: "Mohammadpur, Rajshahi",
     status: "scheduled",
     priority: "high",
+    createdAt: "2026-10-01T10:00:00.000Z",
+    updatedAt: "2026-10-08T09:00:00.000Z",
   },
   {
     id: "job-002",
@@ -18,6 +20,8 @@ export const mockJobs: Job[] = [
     location: "Rajshahi City",
     status: "in_progress",
     priority: "medium",
+    createdAt: "2026-10-01T10:00:00.000Z",
+    updatedAt: "2026-10-08T09:00:00.000Z",
   },
   {
     id: "job-003",
@@ -27,5 +31,7 @@ export const mockJobs: Job[] = [
     location: "Boalia, Rajshahi",
     status: "completed",
     priority: "low",
+    createdAt: "2026-10-01T10:00:00.000Z",
+    updatedAt: "2026-10-08T09:00:00.000Z",
   },
 ];
