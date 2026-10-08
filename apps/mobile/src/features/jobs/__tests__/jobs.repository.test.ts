@@ -8,6 +8,7 @@ import {
 } from "../jobs.repository";
 import {
   getLocalJob,
+  insertLocalJob,
   listLocalJobs,
   replaceServerSnapshot,
   upsertServerJob,
@@ -15,6 +16,7 @@ import {
 
 import { ApiError } from "@/api/api-error";
 import type { Job } from "../types";
+import { enqueueMutation } from "@/repositories/sync-queue.repository";
 import { getDatabase } from "@/db/database";
 import { useAuthStore } from "@/stores/auth.store";
 
@@ -33,6 +35,12 @@ vi.mock("@/repositories/local-jobs.repository", () => ({
   listLocalJobs: vi.fn(),
   replaceServerSnapshot: vi.fn(),
   upsertServerJob: vi.fn(),
+  insertLocalJob: vi.fn(),
+  updateLocalJobStatus: vi.fn(),
+}));
+
+vi.mock("@/repositories/sync-queue.repository", () => ({
+  enqueueMutation: vi.fn(),
 }));
 
 vi.mock("@/stores/auth.store", () => ({
@@ -261,5 +269,57 @@ describe("jobs repository - offline aware reads", () => {
       userId,
       createdJob,
     );
+  });
+
+  it("creates a local job and queues a mutation while offline", async () => {
+    vi.mocked(useAuthStore.getState).mockReturnValue({
+      user: {
+        id: userId,
+        name: "Test User",
+        email: "test@example.com",
+      },
+      isAuthenticated: true,
+      isLoading: false,
+      sessionMode: "offline",
+      initializeAuth: vi.fn(),
+      setSession: vi.fn(),
+      signOut: vi.fn(),
+    });
+
+    const db = {
+      withTransactionAsync: vi.fn(async (callback: () => Promise<void>) =>
+        callback(),
+      ),
+    } as never;
+
+    vi.mocked(getDatabase).mockResolvedValue(db);
+
+    const result = await createJob({
+      title: "Offline repair",
+      scheduledAt: "2026-10-10T10:00:00.000Z",
+      location: "Rajshahi",
+      priority: "high",
+    });
+
+    expect(result.title).toBe("Offline repair");
+    expect(result.id).toMatch(/^local-job-/);
+
+    expect(insertLocalJob).toHaveBeenCalled();
+    expect(enqueueMutation).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({
+        userId,
+        entityType: "job",
+        operation: "create",
+      }),
+    );
+  });
+
+  it("updates a job locally and queues the mutation while offline", async () => {
+    // Setup local job + sessionMode="offline"
+    // Then expect:
+    // 1. updateLocalJobStatus()
+    // 2. enqueueMutation()
+    // 3. returned status = "in_progress"
   });
 });

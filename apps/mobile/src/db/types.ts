@@ -11,6 +11,18 @@ export type SyncStatus =
   | "pending_delete"
   | "conflict";
 
+export type SyncEntityType = "job";
+
+export type SyncOperation = "create" | "update" | "delete";
+
+export type SyncQueueStatus =
+  | "pending"
+  | "syncing"
+  | "retry"
+  | "conflict"
+  | "failed"
+  | "synced";
+
 export interface LocalJob {
   id: string;
   userId: string;
@@ -57,6 +69,77 @@ export interface LocalJobRow {
   sync_status: SyncStatus;
 
   deleted_at: string | null;
+}
+
+export interface SyncQueueItem {
+  id: string;
+
+  userId: string;
+
+  entityType: SyncEntityType;
+  entityId: string;
+
+  operation: SyncOperation;
+
+  /**
+   * JSON-serializable mutation payload.
+   *
+   * Example:
+   *
+   * {
+   *   id: "local-job-...",
+   *   title: "Generator repair",
+   *   ...
+   * }
+   */
+  payload: Record<string, unknown>;
+
+  /**
+   * Stable client-generated identifier.
+   *
+   * This will become the server idempotency key
+   * when the Sync Engine is introduced.
+   */
+  mutationId: string;
+
+  status: SyncQueueStatus;
+
+  attemptCount: number;
+
+  lastAttemptAt: string | null;
+  nextAttemptAt: string | null;
+
+  lastError: string | null;
+
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SyncQueueRow {
+  id: string;
+
+  user_id: string;
+
+  entity_type: SyncEntityType;
+  entity_id: string;
+
+  operation: SyncOperation;
+
+  payload_json: string;
+
+  mutation_id: string;
+
+  status: SyncQueueStatus;
+
+  attempt_count: number;
+
+  last_attempt_at: string | null;
+  next_attempt_at: string | null;
+
+  last_error: string | null;
+
+  created_at: string;
+  updated_at: string;
 }
 
 export interface SQLiteContext {

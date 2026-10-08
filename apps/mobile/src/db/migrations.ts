@@ -56,6 +56,76 @@ export const migrations: Migration[] = [
       ON jobs(sync_status);
     `,
   },
+  {
+    version: 2,
+    description: "Create sync queue",
+    sql: `
+      CREATE TABLE IF NOT EXISTS sync_queue (
+        id TEXT PRIMARY KEY NOT NULL,
+
+        user_id TEXT NOT NULL,
+
+        entity_type TEXT NOT NULL
+          CHECK (
+            entity_type IN ('job')
+          ),
+
+        entity_id TEXT NOT NULL,
+
+        operation TEXT NOT NULL
+          CHECK (
+            operation IN ('create', 'update', 'delete')
+          ),
+
+        payload_json TEXT NOT NULL,
+
+        mutation_id TEXT NOT NULL,
+
+        status TEXT NOT NULL
+          CHECK (
+            status IN (
+              'pending',
+              'syncing',
+              'retry',
+              'conflict',
+              'failed',
+              'synced'
+            )
+          ),
+
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+
+        last_attempt_at TEXT,
+
+        next_attempt_at TEXT,
+
+        last_error TEXT,
+
+        created_at TEXT NOT NULL,
+
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_queue_user_mutation
+      ON sync_queue(user_id, mutation_id);
+
+      CREATE INDEX IF NOT EXISTS idx_sync_queue_user_status_next
+      ON sync_queue(
+        user_id,
+        status,
+        next_attempt_at,
+        created_at
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_sync_queue_entity
+      ON sync_queue(
+        user_id,
+        entity_type,
+        entity_id,
+        created_at
+      );
+    `,
+  },
 ];
 
 export async function runMigrations(db: SQLiteDatabase): Promise<void> {
@@ -82,8 +152,8 @@ export async function runMigrations(db: SQLiteDatabase): Promise<void> {
       /**
        * Learning:
        *
-       * This SQL is static migration SQL.
-       * User-provided values never get interpolated here.
+       * Migration SQL is static.
+       * No user-provided values are interpolated here.
        */
       await db.execAsync(migration.sql);
 

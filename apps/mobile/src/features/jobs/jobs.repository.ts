@@ -1,14 +1,17 @@
 import type { Job, JobPriority } from "./types";
+import { apiGet, apiPatch, apiPost } from "@/api/client";
 import {
-  ServerJob,
   getLocalJob,
+  insertLocalJob,
   listLocalJobs,
   replaceServerSnapshot,
+  updateLocalJobStatus,
   upsertServerJob,
 } from "@/repositories/local-jobs.repository";
-import { apiGet, apiPatch, apiPost } from "@/api/client";
 
 import { ApiError } from "@/api/api-error";
+import type { LocalJob } from "@/db/types";
+import { enqueueMutation } from "@/repositories/sync-queue.repository";
 import { getDatabase } from "@/db/database";
 import { useAuthStore } from "@/stores/auth.store";
 
@@ -37,20 +40,16 @@ function getCurrentUserId(): string {
   return userId;
 }
 
-/**
- * A 4xx response represents a known API/domain decision.
- *
- * Example:
- * - 401: authentication/session problem
- * - 404: resource does not exist
- * - 409: conflict/business rule
- *
- * We should not silently replace those with stale local data.
- *
- * A network error or 5xx response can reasonably fall back
- * to the local cache because the server may simply be unavailable.
- */
+function isOfflineSession(): boolean {
+  return useAuthStore.getState().sessionMode === "offline";
+}
+
 function shouldFallbackToLocal(error: unknown): boolean {
+  /**
+   * A network failure means the server may simply be unreachable.
+   *
+   * 4xx responses remain authoritative API/domain failures.
+   */
   if (!(error instanceof ApiError)) {
     return true;
   }
@@ -58,19 +57,25 @@ function shouldFallbackToLocal(error: unknown): boolean {
   return error.status >= 500;
 }
 
+function generateLocalJobId(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return `local-job-${globalThis.crypto.randomUUID()}`;
+  }
+
+  return `local-job-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 /**
  * Reads cached jobs without allowing a local-database failure
  * to hide the original network/API failure.
- *
- * This is especially important for web because the native
- * SQLite configuration is not our current web target.
  */
 async function readCachedJobs(userId: string): Promise<Job[] | null> {
   try {
     const db = await getDatabase();
+
     const jobs = await listLocalJobs(db, userId);
 
-    return jobs.length > 0 ? jobs : null;
+    return jobs.length > 0 ? (jobs as Job[]) : null;
   } catch (error) {
     console.warn("Failed to read local jobs cache:", error);
 
@@ -79,15 +84,12 @@ async function readCachedJobs(userId: string): Promise<Job[] | null> {
 }
 
 /**
- * Updates the local cache from a successful server response.
+ * Best-effort server -> local cache update.
  *
- * Cache failures should not make an otherwise successful API
- * request fail. The server response remains authoritative.
+ * Important:
+ * local-jobs.repository protects pending local mutations.
  */
-async function cacheServerJobs(
-  userId: string,
-  jobs: ServerJob[],
-): Promise<void> {
+async function cacheServerJobs(userId: string, jobs: Job[]): Promise<void> {
   try {
     const db = await getDatabase();
 
@@ -97,11 +99,6 @@ async function cacheServerJobs(
   }
 }
 
-/**
- * Cache one successful server job.
- *
- * This is best-effort for the same reason as cacheServerJobs().
- */
 async function cacheServerJob(userId: string, job: Job): Promise<void> {
   try {
     const db = await getDatabase();
@@ -112,15 +109,156 @@ async function cacheServerJob(userId: string, job: Job): Promise<void> {
   }
 }
 
+async function readCachedJob(
+  userId: string,
+  jobId: string,
+): Promise<Job | null> {
+  try {
+    const db = await getDatabase();
+
+    const job = await getLocalJob(db, userId, jobId);
+
+    return job as Job | null;
+  } catch (error) {
+    console.warn("Failed to read local job cache:", error);
+
+    return null;
+  }
+}
+
+async function createLocalJob(
+  userId: string,
+  input: CreateJobInput,
+): Promise<Job> {
+  const db = await getDatabase();
+
+  const now = new Date().toISOString();
+
+  const localJob: LocalJob = {
+    id: generateLocalJobId(),
+
+    userId,
+
+    title: input.title,
+    scheduledAt: input.scheduledAt,
+    location: input.location,
+
+    status: "scheduled",
+    priority: input.priority,
+
+    createdAt: now,
+    updatedAt: now,
+
+    serverUpdatedAt: null,
+    localUpdatedAt: now,
+
+    syncStatus: "pending_create",
+
+    deletedAt: null,
+  };
+
+  await db.withTransactionAsync(async () => {
+    /**
+     * Atomic local write:
+     *
+     * Either both the job and its outbox mutation exist,
+     * or neither exists.
+     */
+    await insertLocalJob(db, userId, localJob);
+
+    await enqueueMutation(db, {
+      userId,
+
+      entityType: "job",
+      entityId: localJob.id,
+
+      operation: "create",
+
+      payload: {
+        id: localJob.id,
+        title: localJob.title,
+        scheduledAt: localJob.scheduledAt,
+        location: localJob.location,
+        priority: localJob.priority,
+      },
+    });
+  });
+
+  return localJob as Job;
+}
+
+async function updateLocalJobStatusOffline(
+  userId: string,
+  id: string,
+  status: Job["status"],
+): Promise<Job> {
+  const db = await getDatabase();
+
+  const existingJob = await getLocalJob(db, userId, id);
+
+  if (!existingJob) {
+    throw new Error("LOCAL_JOB_NOT_FOUND");
+  }
+
+  const baseVersion = existingJob.serverUpdatedAt;
+
+  let updatedJob: LocalJob;
+
+  await db.withTransactionAsync(async () => {
+    updatedJob = await updateLocalJobStatus(db, userId, id, status);
+
+    await enqueueMutation(db, {
+      userId,
+
+      entityType: "job",
+      entityId: id,
+
+      operation: "update",
+
+      payload: {
+        status,
+
+        /**
+         * Future Sync Engine / server conflict detection
+         * will use this version anchor.
+         */
+        baseVersion,
+      },
+    });
+  });
+
+  return updatedJob! as Job;
+}
+
 export async function getJobs(): Promise<Job[]> {
   const userId = getCurrentUserId();
+
+  /**
+   * When authentication explicitly says we are offline,
+   * avoid making unnecessary network requests.
+   */
+  if (isOfflineSession()) {
+    const cachedJobs = await readCachedJobs(userId);
+
+    if (cachedJobs) {
+      return cachedJobs;
+    }
+
+    throw new Error("OFFLINE_JOBS_UNAVAILABLE");
+  }
 
   try {
     const response = await apiGet<JobsResponse>("/api/jobs");
 
     await cacheServerJobs(userId, response.data);
 
-    return response.data;
+    /**
+     * Read from SQLite after caching so pending local mutations
+     * remain visible even if the server is behind.
+     */
+    const localJobs = await readCachedJobs(userId);
+
+    return localJobs ?? response.data;
   } catch (error) {
     if (!shouldFallbackToLocal(error)) {
       throw error;
@@ -139,26 +277,39 @@ export async function getJobs(): Promise<Job[]> {
 export async function getJobById(id: string): Promise<Job> {
   const userId = getCurrentUserId();
 
+  if (isOfflineSession()) {
+    const cachedJob = await readCachedJob(userId, id);
+
+    if (cachedJob) {
+      return cachedJob;
+    }
+
+    throw new Error("OFFLINE_JOB_UNAVAILABLE");
+  }
+
   try {
     const response = await apiGet<JobResponse>(`/api/jobs/${id}`);
 
     await cacheServerJob(userId, response.data);
 
-    return response.data;
+    /**
+     * Return the local version after caching.
+     *
+     * If an offline mutation is pending, the local version
+     * remains authoritative for the current device.
+     */
+    const localJob = await readCachedJob(userId, id);
+
+    return localJob ?? response.data;
   } catch (error) {
     if (!shouldFallbackToLocal(error)) {
       throw error;
     }
 
-    try {
-      const db = await getDatabase();
-      const cachedJob = await getLocalJob(db, userId, id);
+    const cachedJob = await readCachedJob(userId, id);
 
-      if (cachedJob) {
-        return cachedJob;
-      }
-    } catch (cacheError) {
-      console.warn("Failed to read local job cache:", cacheError);
+    if (cachedJob) {
+      return cachedJob;
     }
 
     throw error;
@@ -169,23 +320,66 @@ export async function updateJobStatus(
   id: string,
   status: Job["status"],
 ): Promise<Job> {
-  const response = await apiPatch<JobResponse>(`/api/jobs/${id}/status`, {
-    status,
-  });
-
   const userId = getCurrentUserId();
 
-  await cacheServerJob(userId, response.data);
+  /**
+   * Explicit offline mode.
+   */
+  if (isOfflineSession()) {
+    return updateLocalJobStatusOffline(userId, id, status);
+  }
 
-  return response.data;
+  try {
+    const response = await apiPatch<JobResponse>(`/api/jobs/${id}/status`, {
+      status,
+    });
+
+    await cacheServerJob(userId, response.data);
+
+    return response.data;
+  } catch (error) {
+    /**
+     * Only network failures are converted into offline
+     * outbox mutations at this stage.
+     *
+     * A 4xx business/domain response remains authoritative.
+     */
+    if (error instanceof ApiError) {
+      throw error;
+    }
+
+    return updateLocalJobStatusOffline(userId, id, status);
+  }
 }
 
 export async function createJob(input: CreateJobInput): Promise<Job> {
-  const response = await apiPost<JobResponse>("/api/jobs", input);
-
   const userId = getCurrentUserId();
 
-  await cacheServerJob(userId, response.data);
+  /**
+   * Explicit offline session.
+   */
+  if (isOfflineSession()) {
+    return createLocalJob(userId, input);
+  }
 
-  return response.data;
+  try {
+    const response = await apiPost<JobResponse>("/api/jobs", input);
+
+    await cacheServerJob(userId, response.data);
+
+    return response.data;
+  } catch (error) {
+    /**
+     * Network failure:
+     *
+     * Persist locally instead of losing the user's work.
+     *
+     * We deliberately do NOT queue 4xx responses.
+     */
+    if (error instanceof ApiError) {
+      throw error;
+    }
+
+    return createLocalJob(userId, input);
+  }
 }

@@ -3,6 +3,7 @@ import type {
   JobStatus,
   LocalJob,
   LocalJobRow,
+  SyncStatus,
 } from "../db/types";
 
 import type { SQLiteDatabase } from "expo-sqlite";
@@ -84,12 +85,57 @@ function mapServerJobToLocalJob(
   };
 }
 
+async function getExistingJobRow(
+  db: SQLiteDatabase,
+  jobId: string,
+): Promise<LocalJobRow | null> {
+  return db.getFirstAsync<LocalJobRow>(
+    `
+      SELECT
+        id,
+        user_id,
+        title,
+        scheduled_at,
+        location,
+        status,
+        priority,
+        created_at,
+        updated_at,
+        server_updated_at,
+        local_updated_at,
+        sync_status,
+        deleted_at
+      FROM jobs
+      WHERE id = ?
+      LIMIT 1
+    `,
+    jobId,
+  );
+}
+
 export async function upsertServerJob(
   db: SQLiteDatabase,
   userId: string,
   job: ServerJob,
 ): Promise<LocalJob> {
   const localJob = mapServerJobToLocalJob(job, userId);
+
+  const existing = await getExistingJobRow(db, job.id);
+
+  /**
+   * Defense-in-depth against local cross-user ID collisions.
+   */
+  if (existing && existing.user_id !== userId) {
+    throw new Error("LOCAL_JOB_ID_BELONGS_TO_ANOTHER_USER");
+  }
+
+  /**
+   * Do not allow fresh server reads to overwrite
+   * local unsynchronized work.
+   */
+  if (existing && existing.sync_status !== "synced") {
+    return mapRowToLocalJob(existing);
+  }
 
   await db.runAsync(
     `
@@ -126,6 +172,7 @@ export async function upsertServerJob(
         local_updated_at = excluded.local_updated_at,
         sync_status = excluded.sync_status,
         deleted_at = excluded.deleted_at
+      WHERE jobs.user_id = excluded.user_id
     `,
     localJob.id,
     localJob.userId,
@@ -151,6 +198,106 @@ export async function upsertServerJob(
   return localJob;
 }
 
+export async function insertLocalJob(
+  db: SQLiteDatabase,
+  userId: string,
+  job: LocalJob,
+): Promise<LocalJob> {
+  if (job.userId !== userId) {
+    throw new Error("Cannot persist a job belonging to another user");
+  }
+
+  await db.runAsync(
+    `
+      INSERT INTO jobs (
+        id,
+        user_id,
+        title,
+        scheduled_at,
+        location,
+        status,
+        priority,
+        created_at,
+        updated_at,
+        server_updated_at,
+        local_updated_at,
+        sync_status,
+        deleted_at
+      )
+      VALUES (
+        ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?
+      )
+    `,
+    job.id,
+    job.userId,
+    job.title,
+    job.scheduledAt,
+    job.location,
+    job.status,
+    job.priority,
+    job.createdAt,
+    job.updatedAt,
+    job.serverUpdatedAt,
+    job.localUpdatedAt,
+    job.syncStatus,
+    job.deletedAt,
+  );
+
+  return job;
+}
+
+export async function updateLocalJobStatus(
+  db: SQLiteDatabase,
+  userId: string,
+  jobId: string,
+  status: JobStatus,
+  localUpdatedAt = new Date().toISOString(),
+): Promise<LocalJob> {
+  const existing = await getLocalJob(db, userId, jobId);
+
+  if (!existing) {
+    throw new Error("LOCAL_JOB_NOT_FOUND");
+  }
+
+  if (existing.syncStatus === "conflict") {
+    throw new Error("LOCAL_JOB_HAS_CONFLICT");
+  }
+
+  const nextSyncStatus: SyncStatus =
+    existing.syncStatus === "pending_create"
+      ? "pending_create"
+      : "pending_update";
+
+  await db.runAsync(
+    `
+      UPDATE jobs
+      SET
+        status = ?,
+        updated_at = ?,
+        local_updated_at = ?,
+        sync_status = ?
+      WHERE id = ?
+        AND user_id = ?
+        AND deleted_at IS NULL
+    `,
+    status,
+    localUpdatedAt,
+    localUpdatedAt,
+    nextSyncStatus,
+    jobId,
+    userId,
+  );
+
+  const updatedJob = await getLocalJob(db, userId, jobId);
+
+  if (!updatedJob) {
+    throw new Error("LOCAL_JOB_UPDATE_FAILED");
+  }
+
+  return updatedJob;
+}
+
 export async function replaceServerSnapshot(
   db: SQLiteDatabase,
   userId: string,
@@ -160,7 +307,7 @@ export async function replaceServerSnapshot(
    * This method assumes GET /api/jobs returns the user's
    * complete current job collection.
    *
-   * When pagination is introduced, this strategy must change.
+   * Pending/conflict local rows are preserved.
    */
 
   for (const job of jobs) {
@@ -170,10 +317,17 @@ export async function replaceServerSnapshot(
   }
 
   await db.withTransactionAsync(async () => {
+    /**
+     * Only rows fully synchronized with the server may be
+     * removed from a complete server snapshot.
+     *
+     * Pending local mutations must remain untouched.
+     */
     await db.runAsync(
       `
         DELETE FROM jobs
         WHERE user_id = ?
+          AND sync_status = 'synced'
       `,
       userId,
     );
@@ -190,25 +344,25 @@ export async function listLocalJobs(
 ): Promise<LocalJob[]> {
   const rows = await db.getAllAsync<LocalJobRow>(
     `
-        SELECT
-          id,
-          user_id,
-          title,
-          scheduled_at,
-          location,
-          status,
-          priority,
-          created_at,
-          updated_at,
-          server_updated_at,
-          local_updated_at,
-          sync_status,
-          deleted_at
-        FROM jobs
-        WHERE user_id = ?
-          AND deleted_at IS NULL
-        ORDER BY scheduled_at ASC
-      `,
+      SELECT
+        id,
+        user_id,
+        title,
+        scheduled_at,
+        location,
+        status,
+        priority,
+        created_at,
+        updated_at,
+        server_updated_at,
+        local_updated_at,
+        sync_status,
+        deleted_at
+      FROM jobs
+      WHERE user_id = ?
+        AND deleted_at IS NULL
+      ORDER BY scheduled_at ASC
+    `,
     userId,
   );
 
@@ -222,26 +376,26 @@ export async function getLocalJob(
 ): Promise<LocalJob | null> {
   const row = await db.getFirstAsync<LocalJobRow>(
     `
-        SELECT
-          id,
-          user_id,
-          title,
-          scheduled_at,
-          location,
-          status,
-          priority,
-          created_at,
-          updated_at,
-          server_updated_at,
-          local_updated_at,
-          sync_status,
-          deleted_at
-        FROM jobs
-        WHERE id = ?
-          AND user_id = ?
-          AND deleted_at IS NULL
-        LIMIT 1
-      `,
+      SELECT
+        id,
+        user_id,
+        title,
+        scheduled_at,
+        location,
+        status,
+        priority,
+        created_at,
+        updated_at,
+        server_updated_at,
+        local_updated_at,
+        sync_status,
+        deleted_at
+      FROM jobs
+      WHERE id = ?
+        AND user_id = ?
+        AND deleted_at IS NULL
+      LIMIT 1
+    `,
     jobId,
     userId,
   );
