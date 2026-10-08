@@ -5,8 +5,30 @@ import { Platform } from "react-native";
 // Learning: access and refresh tokens are both credentials,
 // so both live in the device's secure storage.
 const ACCESS_TOKEN_KEY = "field_service_access_token";
-
 const REFRESH_TOKEN_KEY = "field_service_refresh_token";
+
+const OFFLINE_SESSION_KEY = "field_service_offline_session";
+
+/**
+ * Maximum amount of time the application may trust
+ * a previously server-validated session while completely offline.
+ *
+ * This is a product/security policy.
+ * It does NOT replace server-side authentication.
+ */
+export const OFFLINE_SESSION_GRACE_MS = 24 * 60 * 60 * 1000;
+
+export interface StoredAuthUser {
+  id: string;
+  name: string;
+  email: string;
+}
+
+export interface OfflineSession {
+  user: StoredAuthUser;
+  lastServerValidatedAt: string;
+  offlineAllowedUntil: string;
+}
 
 /**
  * Web:
@@ -103,4 +125,91 @@ export async function clearSessionTokens(): Promise<void> {
     removeStorageItem(ACCESS_TOKEN_KEY),
     removeStorageItem(REFRESH_TOKEN_KEY),
   ]);
+}
+
+/**
+ * Save locally trusted session information after
+ * successful server authentication/validation.
+ */
+export async function saveOfflineSession(
+  user: StoredAuthUser,
+  validatedAt: Date = new Date(),
+): Promise<void> {
+  const offlineAllowedUntil = new Date(
+    validatedAt.getTime() + OFFLINE_SESSION_GRACE_MS,
+  );
+
+  const session: OfflineSession = {
+    user,
+    lastServerValidatedAt: validatedAt.toISOString(),
+    offlineAllowedUntil: offlineAllowedUntil.toISOString(),
+  };
+
+  await setStorageItem(OFFLINE_SESSION_KEY, JSON.stringify(session));
+}
+
+/**
+ * Read the previously trusted offline session.
+ */
+export async function getOfflineSession(): Promise<OfflineSession | null> {
+  const rawValue = await getStorageItem(OFFLINE_SESSION_KEY);
+
+  if (!rawValue) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue) as Partial<OfflineSession>;
+
+    if (
+      !parsed.user ||
+      typeof parsed.user.id !== "string" ||
+      typeof parsed.user.name !== "string" ||
+      typeof parsed.user.email !== "string" ||
+      typeof parsed.lastServerValidatedAt !== "string" ||
+      typeof parsed.offlineAllowedUntil !== "string"
+    ) {
+      return null;
+    }
+
+    return parsed as OfflineSession;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Determine whether the locally trusted session is still
+ * inside the offline grace window.
+ */
+export function canUseOfflineSession(
+  session: OfflineSession,
+  now: Date = new Date(),
+): boolean {
+  const lastValidatedAt = Date.parse(session.lastServerValidatedAt);
+  const offlineAllowedUntil = Date.parse(session.offlineAllowedUntil);
+  const currentTime = now.getTime();
+
+  if (
+    !Number.isFinite(lastValidatedAt) ||
+    !Number.isFinite(offlineAllowedUntil)
+  ) {
+    return false;
+  }
+
+  if (offlineAllowedUntil <= lastValidatedAt) {
+    return false;
+  }
+
+  return currentTime < offlineAllowedUntil;
+}
+
+/**
+ * Remove the local offline trust record.
+ *
+ * This must happen when the session is explicitly invalidated,
+ * such as logout or confirmed server-side authentication failure.
+ */
+export async function clearOfflineSession(): Promise<void> {
+  await removeStorageItem(OFFLINE_SESSION_KEY);
 }

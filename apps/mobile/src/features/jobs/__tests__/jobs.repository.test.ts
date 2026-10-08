@@ -91,6 +91,7 @@ describe("jobs repository - offline aware reads", () => {
       },
       isAuthenticated: true,
       isLoading: false,
+      sessionMode: "online",
       initializeAuth: vi.fn(),
       setSession: vi.fn(),
       signOut: vi.fn(),
