@@ -384,4 +384,59 @@ export async function deleteMutation(
   );
 }
 
+export async function hasPendingMutationsForEntity(
+  db: SQLiteDatabase,
+  userId: string,
+  entityType: SyncEntityType,
+  entityId: string,
+): Promise<boolean> {
+  const row = await db.getFirstAsync<{ count: number }>(
+    `
+      SELECT COUNT(*) AS count
+      FROM sync_queue
+      WHERE user_id = ?
+        AND entity_type = ?
+        AND entity_id = ?
+        AND status IN (
+          'pending',
+          'retry',
+          'syncing'
+        )
+    `,
+    userId,
+    entityType,
+    entityId,
+  );
+
+  return (row?.count ?? 0) > 0;
+}
+
+export async function recoverStaleSyncingMutations(
+  db: SQLiteDatabase,
+  userId: string,
+  staleBefore: Date,
+): Promise<void> {
+  const now = new Date().toISOString();
+
+  await db.runAsync(
+    `
+      UPDATE sync_queue
+      SET
+        status = 'retry',
+        next_attempt_at = ?,
+        last_error = ?,
+        updated_at = ?
+      WHERE user_id = ?
+        AND status = 'syncing'
+        AND last_attempt_at IS NOT NULL
+        AND last_attempt_at <= ?
+    `,
+    now,
+    "SYNC_INTERRUPTED",
+    now,
+    userId,
+    staleBefore.toISOString(),
+  );
+}
+
 export { mapRowToSyncQueueItem };

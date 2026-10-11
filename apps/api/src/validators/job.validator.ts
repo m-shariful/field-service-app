@@ -3,6 +3,7 @@ import type { JobPriority, JobStatus } from "../models/job";
 const JOB_PRIORITIES = ["low", "medium", "high", "urgent"] as const;
 
 interface CreateJobInput {
+  id?: string;
   title: string;
   scheduledAt: string;
   location: string;
@@ -31,6 +32,14 @@ export function validateCreateJobInput(input: unknown): ValidationResult {
 
   // Learning: Validate at the HTTP boundary before data reaches
   // the service/database layer.
+  if (body.id !== undefined) {
+    if (typeof body.id !== "string" || !body.id.trim()) {
+      errors.id = "Job id must be a non-empty string";
+    } else if (body.id.trim().length > 150) {
+      errors.id = "Job id must be 150 characters or fewer";
+    }
+  }
+
   if (typeof body.title !== "string" || !body.title.trim()) {
     errors.title = "Title is required";
   } else if (body.title.trim().length > 200) {
@@ -67,6 +76,7 @@ export function validateCreateJobInput(input: unknown): ValidationResult {
     success: true,
     errors: {},
     data: {
+      ...(typeof body.id === "string" ? { id: body.id.trim() } : {}),
       title: (body.title as string).trim(),
       scheduledAt: body.scheduledAt as string,
       location: (body.location as string).trim(),

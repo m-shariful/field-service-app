@@ -416,4 +416,79 @@ export async function clearUserJobs(
   );
 }
 
+export async function acknowledgeServerJob(
+  db: SQLiteDatabase,
+  userId: string,
+  job: ServerJob,
+  hasPendingMutations: boolean,
+): Promise<LocalJob> {
+  if (job.userId !== userId) {
+    throw new Error("Cannot persist a job belonging to another user");
+  }
+
+  const existing = await getLocalJob(db, userId, job.id);
+
+  if (!existing) {
+    return upsertServerJob(db, userId, job);
+  }
+
+  /**
+   * There is another local mutation waiting behind the one
+   * that was just acknowledged.
+   *
+   * Keep the user's final local state visible while recording
+   * the newest known server version.
+   */
+  if (hasPendingMutations) {
+    await db.runAsync(
+      `
+        UPDATE jobs
+        SET
+          created_at = ?,
+          server_updated_at = ?,
+          sync_status = 'pending_update'
+        WHERE id = ?
+          AND user_id = ?
+      `,
+      job.createdAt,
+      job.updatedAt,
+      job.id,
+      userId,
+    );
+
+    const updated = await getLocalJob(db, userId, job.id);
+
+    if (!updated) {
+      throw new Error("LOCAL_JOB_ACKNOWLEDGEMENT_FAILED");
+    }
+
+    return updated;
+  }
+
+  /**
+   * No local mutations remain.
+   *
+   * Server is now authoritative.
+   */
+  return upsertServerJob(db, userId, job);
+}
+
+export async function markLocalJobConflict(
+  db: SQLiteDatabase,
+  userId: string,
+  jobId: string,
+): Promise<void> {
+  await db.runAsync(
+    `
+      UPDATE jobs
+      SET
+        sync_status = 'conflict'
+      WHERE id = ?
+        AND user_id = ?
+    `,
+    jobId,
+    userId,
+  );
+}
+
 export { mapRowToLocalJob, mapServerJobToLocalJob };

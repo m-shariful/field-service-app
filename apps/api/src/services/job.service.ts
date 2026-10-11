@@ -21,14 +21,50 @@ export async function getJobById(
 export async function createJob(
   userId: string,
   input: {
+    id?: string;
     title: string;
     scheduledAt: string;
     location: string;
     priority: JobPriority;
   },
 ): Promise<Job> {
+  const jobId = input.id ?? `job-${Date.now()}`;
+
+  /**
+   * A client-created offline job carries its stable local id.
+   *
+   * This gives us an additional layer of protection:
+   * even if the idempotency record is lost during a crash,
+   * retrying the same create request cannot create another
+   * copy of the same local mutation.
+   */
+  if (input.id) {
+    const existingJob = await JobModel.findOne({
+      id: jobId,
+    });
+
+    if (existingJob) {
+      if (existingJob.userId !== userId) {
+        throw new Error("JOB_ID_ALREADY_EXISTS");
+      }
+
+      const sameRequest =
+        existingJob.title === input.title &&
+        existingJob.scheduledAt === input.scheduledAt &&
+        existingJob.location === input.location &&
+        existingJob.priority === input.priority &&
+        existingJob.status === "scheduled";
+
+      if (sameRequest) {
+        return existingJob.toObject();
+      }
+
+      throw new Error("JOB_ID_ALREADY_EXISTS");
+    }
+  }
+
   const job = await JobModel.create({
-    id: `job-${Date.now()}`,
+    id: jobId,
     userId,
     title: input.title,
     scheduledAt: input.scheduledAt,
@@ -49,6 +85,16 @@ export async function updateJobStatus(
 
   if (!job) {
     return undefined;
+  }
+
+  /**
+   * Setting the same state twice is intentionally idempotent.
+   *
+   * This is important when the mobile app retries a mutation
+   * after the server processed it but the response was lost.
+   */
+  if (job.status === newStatus) {
+    return job;
   }
 
   const nextStatus = transitionJobStatus(job.status, newStatus);

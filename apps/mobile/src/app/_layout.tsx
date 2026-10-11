@@ -1,6 +1,7 @@
 import { Stack, router, usePathname } from "expo-router";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 
+import { syncPendingMutations } from "@/services/sync-engine";
 import { useAuthStore } from "@/stores/auth.store";
 import { colors } from "@/theme";
 import { useEffect } from "react";
@@ -11,6 +12,9 @@ export default function RootLayout() {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const isLoading = useAuthStore((state) => state.isLoading);
   const initializeAuth = useAuthStore((state) => state.initializeAuth);
+
+  // Get the current session mode from the auth store
+  const sessionMode = useAuthStore((state) => state.sessionMode);
 
   useEffect(() => {
     initializeAuth();
@@ -32,6 +36,17 @@ export default function RootLayout() {
       router.replace("/");
     }
   }, [isAuthenticated, isLoading, pathname]);
+
+  // Sync pending mutations in the background when the user is authenticated and online.
+  useEffect(() => {
+    if (!isAuthenticated || sessionMode !== "online") {
+      return;
+    }
+
+    void syncPendingMutations().catch((error) => {
+      console.warn("Background sync failed:", error);
+    });
+  }, [isAuthenticated, sessionMode]);
 
   if (isLoading) {
     return (
