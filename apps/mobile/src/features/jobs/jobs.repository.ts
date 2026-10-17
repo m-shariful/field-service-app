@@ -1,4 +1,3 @@
-import type { Job, JobPriority } from "./types";
 import { apiGet, apiPatch, apiPost } from "@/api/client";
 import {
   getLocalJob,
@@ -8,12 +7,23 @@ import {
   updateLocalJobStatus,
   upsertServerJob,
 } from "@/repositories/local-jobs.repository";
+import type { Job, JobPriority } from "./types";
 
 import { ApiError } from "@/api/api-error";
+import { getDatabase } from "@/db/database";
 import type { LocalJob } from "@/db/types";
 import { enqueueMutation } from "@/repositories/sync-queue.repository";
-import { getDatabase } from "@/db/database";
 import { useAuthStore } from "@/stores/auth.store";
+
+export interface JobsSyncResponse {
+  data: {
+    items: Job[];
+
+    nextCursor: string | null;
+
+    hasMore: boolean;
+  };
+}
 
 export interface JobsResponse {
   data: Job[];
@@ -382,4 +392,20 @@ export async function createJob(input: CreateJobInput): Promise<Job> {
 
     return createLocalJob(userId, input);
   }
+}
+
+export async function pullJobChanges(
+  cursor?: string | null,
+): Promise<JobsSyncResponse["data"]> {
+  const query = new URLSearchParams();
+
+  if (cursor) {
+    query.set("cursor", cursor);
+  }
+
+  query.set("limit", "50");
+
+  const path = `/api/jobs/sync?${query.toString()}`;
+
+  return (await apiGet<JobsSyncResponse>(path)).data;
 }

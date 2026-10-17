@@ -15,8 +15,10 @@ import {
   validateUpdateJobStatusInput,
 } from "../validators/job.validator";
 
-import type { AuthenticatedRequest } from "../types/auth";
 import type { Response } from "express";
+import { pullJobChanges } from "../services/job-sync.service";
+import type { AuthenticatedRequest } from "../types/auth";
+import { decodeJobSyncCursor } from "../utils/sync-cursor";
 
 function getAuthenticatedUserId(req: AuthenticatedRequest): string | undefined {
   return req.user?.id;
@@ -229,6 +231,75 @@ export async function updateJobStatusController(
 
     if (idempotencyResponse) {
       return idempotencyResponse;
+    }
+
+    throw error;
+  }
+}
+
+export async function syncJobs(req: AuthenticatedRequest, res: Response) {
+  const userId = getAuthenticatedUserId(req);
+
+  if (!userId) {
+    return sendError(res, "UNAUTHORIZED", "Authentication required", 401);
+  }
+
+  const rawCursor = req.query.cursor;
+
+  let cursor: string | undefined;
+
+  if (typeof rawCursor === "string") {
+    cursor = rawCursor;
+  } else if (rawCursor !== undefined) {
+    return sendError(res, "INVALID_SYNC_CURSOR", "Invalid sync cursor", 400);
+  }
+
+  let limit: number | undefined;
+
+  const rawLimit = req.query.limit;
+
+  if (rawLimit !== undefined) {
+    if (typeof rawLimit !== "string") {
+      return sendError(res, "INVALID_SYNC_LIMIT", "Invalid sync limit", 400);
+    }
+
+    const parsedLimit = Number(rawLimit);
+
+    if (
+      !Number.isInteger(parsedLimit) ||
+      parsedLimit < 1 ||
+      parsedLimit > 100
+    ) {
+      return sendError(
+        res,
+        "INVALID_SYNC_LIMIT",
+        "Sync limit must be between 1 and 100",
+        400,
+      );
+    }
+
+    limit = parsedLimit;
+  }
+
+  try {
+    /**
+     * Decode here as well so malformed cursors fail
+     * at the HTTP boundary rather than becoming
+     * database query errors.
+     */
+    if (cursor) {
+      decodeJobSyncCursor(cursor);
+    }
+
+    const result = await pullJobChanges(userId, {
+      cursor,
+      limit,
+    });
+
+    return sendSuccess(res, result);
+  } catch (error) {
+    if (error instanceof Error && error.message === "INVALID_SYNC_CURSOR") {
+      return sendError(res, "INVALID_SYNC_CURSOR", "Invalid sync cursor", 400);
     }
 
     throw error;

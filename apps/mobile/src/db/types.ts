@@ -142,6 +142,24 @@ export interface SyncQueueRow {
   updated_at: string;
 }
 
+export interface SyncState {
+  userId: string;
+  entityType: SyncEntityType;
+
+  cursor: string | null;
+
+  updatedAt: string;
+}
+
+export interface SyncStateRow {
+  user_id: string;
+  entity_type: SyncEntityType;
+
+  cursor: string | null;
+
+  updated_at: string;
+}
+
 export interface SQLiteContext {
   db: SQLiteDatabase;
 }

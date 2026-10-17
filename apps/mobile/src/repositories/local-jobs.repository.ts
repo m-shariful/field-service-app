@@ -198,6 +198,67 @@ export async function upsertServerJob(
   return localJob;
 }
 
+// Current upsertServerJob() protects pending local mutations,
+// but pull synchronization also needs to remember the latest server version even when local changes are pending.
+export async function applyServerJobFromPull(
+  db: SQLiteDatabase,
+  userId: string,
+  job: ServerJob,
+): Promise<LocalJob> {
+  if (job.userId !== userId) {
+    throw new Error("Cannot persist a job belonging to another user");
+  }
+
+  const existing = await getExistingJobRow(db, job.id);
+
+  if (existing && existing.user_id !== userId) {
+    throw new Error("LOCAL_JOB_ID_BELONGS_TO_ANOTHER_USER");
+  }
+
+  /**
+   * No local version exists yet.
+   */
+  if (!existing) {
+    return upsertServerJob(db, userId, job);
+  }
+
+  /**
+   * Local work is pending.
+   *
+   * Keep the local user-visible data,
+   * but record that the server has moved
+   * to a newer version.
+   */
+  if (existing.sync_status !== "synced") {
+    await db.runAsync(
+      `
+        UPDATE jobs
+        SET
+          server_updated_at = ?
+        WHERE id = ?
+          AND user_id = ?
+      `,
+      job.updatedAt,
+      job.id,
+      userId,
+    );
+
+    const updated = await getLocalJob(db, userId, job.id);
+
+    if (!updated) {
+      throw new Error("LOCAL_JOB_PULL_APPLY_FAILED");
+    }
+
+    return updated;
+  }
+
+  /**
+   * No pending local work:
+   * server becomes authoritative.
+   */
+  return upsertServerJob(db, userId, job);
+}
+
 export async function insertLocalJob(
   db: SQLiteDatabase,
   userId: string,

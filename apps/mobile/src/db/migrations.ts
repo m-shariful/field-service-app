@@ -126,6 +126,29 @@ export const migrations: Migration[] = [
       );
     `,
   },
+  {
+    version: 3,
+    description: "Create sync state table",
+    sql: `
+    CREATE TABLE IF NOT EXISTS sync_state (
+      user_id TEXT NOT NULL,
+
+      entity_type TEXT NOT NULL
+        CHECK (
+          entity_type IN ('job')
+        ),
+
+      cursor TEXT,
+
+      updated_at TEXT NOT NULL,
+
+      PRIMARY KEY (
+        user_id,
+        entity_type
+      )
+    );
+  `,
+  },
 ];
 
 export async function runMigrations(db: SQLiteDatabase): Promise<void> {

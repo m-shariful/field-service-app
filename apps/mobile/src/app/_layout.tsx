@@ -1,7 +1,7 @@
 import { Stack, router, usePathname } from "expo-router";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 
-import { syncPendingMutations } from "@/services/sync-engine";
+import { syncNow } from "@/services/sync.service";
 import { useAuthStore } from "@/stores/auth.store";
 import { colors } from "@/theme";
 import { useEffect } from "react";
@@ -43,8 +43,12 @@ export default function RootLayout() {
       return;
     }
 
-    void syncPendingMutations().catch((error) => {
-      console.warn("Background sync failed:", error);
+    // void syncPendingMutations().catch((error) => {
+    //   console.warn("Background sync failed:", error);
+    // });
+
+    void syncNow().catch((error) => {
+      console.warn("Synchronization failed:", error);
     });
   }, [isAuthenticated, sessionMode]);
 
