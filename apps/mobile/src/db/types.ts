@@ -47,6 +47,8 @@ export interface LocalJob {
 
   // Soft-delete support for future sync.
   deletedAt: string | null;
+
+  version: number | null;
 }
 
 export interface LocalJobRow {
@@ -69,6 +71,8 @@ export interface LocalJobRow {
   sync_status: SyncStatus;
 
   deleted_at: string | null;
+
+  server_version: number | null;
 }
 
 export interface SyncQueueItem {

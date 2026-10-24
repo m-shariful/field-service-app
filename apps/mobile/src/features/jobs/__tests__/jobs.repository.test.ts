@@ -1,4 +1,16 @@
 import { apiGet, apiPatch, apiPost } from "@/api/client";
+import {
+  getLocalJob,
+  insertLocalJob,
+  listLocalJobs,
+  markLocalJobConflict,
+  replaceServerSnapshot,
+  upsertServerJob,
+} from "@/repositories/local-jobs.repository";
+import {
+  enqueueMutation,
+  markEntityMutationsConflict,
+} from "@/repositories/sync-queue.repository";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createJob,
@@ -6,19 +18,11 @@ import {
   getJobs,
   updateJobStatus,
 } from "../jobs.repository";
-import {
-  getLocalJob,
-  insertLocalJob,
-  listLocalJobs,
-  replaceServerSnapshot,
-  upsertServerJob,
-} from "@/repositories/local-jobs.repository";
 
 import { ApiError } from "@/api/api-error";
-import type { Job } from "../types";
-import { enqueueMutation } from "@/repositories/sync-queue.repository";
 import { getDatabase } from "@/db/database";
 import { useAuthStore } from "@/stores/auth.store";
+import type { Job } from "../types";
 
 vi.mock("@/api/client", () => ({
   apiGet: vi.fn(),
@@ -37,10 +41,12 @@ vi.mock("@/repositories/local-jobs.repository", () => ({
   upsertServerJob: vi.fn(),
   insertLocalJob: vi.fn(),
   updateLocalJobStatus: vi.fn(),
+  markLocalJobConflict: vi.fn(),
 }));
 
 vi.mock("@/repositories/sync-queue.repository", () => ({
   enqueueMutation: vi.fn(),
+  markEntityMutationsConflict: vi.fn(),
 }));
 
 vi.mock("@/stores/auth.store", () => ({
@@ -62,6 +68,7 @@ const serverJobs: Job[] = [
     priority: "high",
     createdAt: "2026-10-01T10:00:00.000Z",
     updatedAt: "2026-10-08T09:00:00.000Z",
+    version: 1,
   },
   {
     id: "job-002",
@@ -73,6 +80,7 @@ const serverJobs: Job[] = [
     priority: "medium",
     createdAt: "2026-10-01T09:00:00.000Z",
     updatedAt: "2026-10-08T10:00:00.000Z",
+    version: 1,
   },
 ];
 
@@ -223,19 +231,25 @@ describe("jobs repository - offline aware reads", () => {
     expect(getLocalJob).not.toHaveBeenCalled();
   });
 
-  it("caches a successfully updated job", async () => {
+  it("sends the edited baseVersion and caches the updated job", async () => {
     const updatedJob = {
       ...serverJobs[0],
       status: "in_progress" as const,
+      version: 2,
     };
 
     vi.mocked(apiPatch).mockResolvedValue({
       data: updatedJob,
     });
 
-    const result = await updateJobStatus(updatedJob.id, updatedJob.status);
+    const result = await updateJobStatus(updatedJob.id, updatedJob.status, 1);
 
     expect(result).toEqual(updatedJob);
+
+    expect(apiPatch).toHaveBeenCalledWith("/api/jobs/job-001/status", {
+      status: "in_progress",
+      baseVersion: 1,
+    });
 
     expect(upsertServerJob).toHaveBeenCalledWith(
       expect.anything(),
@@ -313,6 +327,41 @@ describe("jobs repository - offline aware reads", () => {
         operation: "create",
       }),
     );
+  });
+
+  it("marks a job as conflicted after a server version conflict", async () => {
+    const db = createDatabase();
+
+    vi.mocked(getDatabase).mockResolvedValue(db);
+
+    const conflict = new ApiError(
+      "This job was changed on the server.",
+      409,
+      "JOB_VERSION_CONFLICT",
+    );
+
+    vi.mocked(apiPatch).mockRejectedValue(conflict);
+
+    await expect(updateJobStatus("job-001", "in_progress", 1)).rejects.toBe(
+      conflict,
+    );
+
+    expect(markLocalJobConflict).toHaveBeenCalledWith(db, userId, "job-001");
+    expect(markEntityMutationsConflict).toHaveBeenCalledWith(
+      db,
+      userId,
+      "job",
+      "job-001",
+      "409:JOB_VERSION_CONFLICT:This job was changed on the server.",
+    );
+  });
+
+  it("does not send an update without a server version", async () => {
+    await expect(
+      updateJobStatus("local-job-001", "in_progress", null),
+    ).rejects.toThrow("JOB_SERVER_VERSION_REQUIRED");
+
+    expect(apiPatch).not.toHaveBeenCalled();
   });
 
   it("updates a job locally and queues the mutation while offline", async () => {

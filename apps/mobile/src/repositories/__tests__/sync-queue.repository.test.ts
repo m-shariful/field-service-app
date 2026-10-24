@@ -4,10 +4,12 @@ import {
   enqueueMutation,
   getMutationById,
   listDueMutations,
+  markEntityMutationsConflict,
   markMutationConflict,
   markMutationRetry,
   markMutationSynced,
   markMutationSyncing,
+  updateMutationPayload,
 } from "../sync-queue.repository";
 
 import type { SQLiteDatabase } from "expo-sqlite";
@@ -217,5 +219,60 @@ describe("sync queue repository", () => {
       "sync-001",
       userId,
     );
+  });
+
+  it("persists a resolved payload before sending the mutation", async () => {
+    const db = createFakeDatabase();
+
+    const payload = {
+      status: "in_progress",
+      baseVersion: 1,
+    };
+
+    await updateMutationPayload(db, userId, "sync-001", payload);
+
+    expect(db.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining("payload_json = ?"),
+      JSON.stringify(payload),
+      expect.any(String),
+      "sync-001",
+      userId,
+    );
+
+    const [sql] = (db.runAsync as ReturnType<typeof vi.fn>).mock.calls[0];
+
+    expect(sql).toContain("status = 'syncing'");
+  });
+
+  it("marks all active mutations for an entity as conflicted", async () => {
+    const db = createFakeDatabase();
+    const errorMessage =
+      "409:JOB_VERSION_CONFLICT:This job was changed on the server.";
+
+    await markEntityMutationsConflict(
+      db,
+      userId,
+      "job",
+      "job-001",
+      errorMessage,
+    );
+
+    const [sql, ...params] = (db.runAsync as ReturnType<typeof vi.fn>).mock
+      .calls[0];
+
+    expect(sql).toContain("status = 'conflict'");
+    expect(sql).toContain("next_attempt_at = NULL");
+    expect(sql).toContain("AND entity_id = ?");
+    expect(sql).toContain("'pending'");
+    expect(sql).toContain("'retry'");
+    expect(sql).toContain("'syncing'");
+
+    expect(params).toEqual([
+      errorMessage,
+      expect.any(String),
+      userId,
+      "job",
+      "job-001",
+    ]);
   });
 });

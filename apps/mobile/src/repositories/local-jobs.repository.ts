@@ -21,6 +21,8 @@ export interface ServerJob {
 
   createdAt: string;
   updatedAt: string;
+
+  version: number | null;
 }
 
 function mapRowToLocalJob(row: LocalJobRow): LocalJob {
@@ -44,6 +46,8 @@ function mapRowToLocalJob(row: LocalJobRow): LocalJob {
     syncStatus: row.sync_status,
 
     deletedAt: row.deleted_at,
+
+    version: row.server_version,
   };
 }
 
@@ -82,6 +86,8 @@ function mapServerJobToLocalJob(
     syncStatus: "synced",
 
     deletedAt: null,
+
+    version: job.version,
   };
 }
 
@@ -102,6 +108,7 @@ async function getExistingJobRow(
         created_at,
         updated_at,
         server_updated_at,
+        server_version,
         local_updated_at,
         sync_status,
         deleted_at
@@ -150,13 +157,14 @@ export async function upsertServerJob(
         created_at,
         updated_at,
         server_updated_at,
+        server_version,
         local_updated_at,
         sync_status,
         deleted_at
       )
       VALUES (
         ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?
       )
       ON CONFLICT(id)
       DO UPDATE SET
@@ -169,6 +177,7 @@ export async function upsertServerJob(
         created_at = excluded.created_at,
         updated_at = excluded.updated_at,
         server_updated_at = excluded.server_updated_at,
+        server_version = excluded.server_version,
         local_updated_at = excluded.local_updated_at,
         sync_status = excluded.sync_status,
         deleted_at = excluded.deleted_at
@@ -188,6 +197,7 @@ export async function upsertServerJob(
     localJob.updatedAt,
 
     localJob.serverUpdatedAt,
+    localJob.version,
     localJob.localUpdatedAt,
 
     localJob.syncStatus,
@@ -234,11 +244,13 @@ export async function applyServerJobFromPull(
       `
         UPDATE jobs
         SET
-          server_updated_at = ?
+          server_updated_at = ?,
+          server_version = ?
         WHERE id = ?
           AND user_id = ?
       `,
       job.updatedAt,
+      job.version,
       job.id,
       userId,
     );
@@ -281,13 +293,14 @@ export async function insertLocalJob(
         created_at,
         updated_at,
         server_updated_at,
+        server_version,
         local_updated_at,
         sync_status,
         deleted_at
       )
       VALUES (
         ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?
       )
     `,
     job.id,
@@ -300,6 +313,7 @@ export async function insertLocalJob(
     job.createdAt,
     job.updatedAt,
     job.serverUpdatedAt,
+    job.version,
     job.localUpdatedAt,
     job.syncStatus,
     job.deletedAt,
@@ -416,6 +430,7 @@ export async function listLocalJobs(
         created_at,
         updated_at,
         server_updated_at,
+        server_version,
         local_updated_at,
         sync_status,
         deleted_at
@@ -448,6 +463,7 @@ export async function getLocalJob(
         created_at,
         updated_at,
         server_updated_at,
+        server_version,
         local_updated_at,
         sync_status,
         deleted_at
@@ -507,12 +523,14 @@ export async function acknowledgeServerJob(
         SET
           created_at = ?,
           server_updated_at = ?,
+          server_version = ?,
           sync_status = 'pending_update'
         WHERE id = ?
           AND user_id = ?
       `,
       job.createdAt,
       job.updatedAt,
+      job.version,
       job.id,
       userId,
     );

@@ -2,6 +2,16 @@ import { Job, JobModel, JobPriority, JobStatus } from "../models/job";
 
 import { transitionJobStatus } from "./job-status.service";
 
+export class JobVersionConflictError extends Error {
+  constructor(
+    public readonly expectedVersion: number,
+    public readonly currentVersion: number,
+  ) {
+    super("JOB_VERSION_CONFLICT");
+    this.name = "JobVersionConflictError";
+  }
+}
+
 export async function getJobs(userId: string): Promise<Job[]> {
   return await JobModel.find({ userId }).lean<Job[]>();
 }
@@ -80,42 +90,125 @@ export async function updateJobStatus(
   id: string,
   userId: string,
   newStatus: JobStatus,
+  baseVersion: number,
 ): Promise<Job | undefined> {
-  const job = await getJobById(id, userId);
+  const currentJob = await JobModel.findOne({
+    id,
+    userId,
+  }).lean<Job>();
 
-  if (!job) {
+  if (!currentJob) {
     return undefined;
   }
 
   /**
-   * Setting the same state twice is intentionally idempotent.
-   *
-   * This is important when the mobile app retries a mutation
-   * after the server processed it but the response was lost.
+   * Step 1: Check the revision the client edited.
    */
-  if (job.status === newStatus) {
-    return job;
+  if (currentJob.version !== baseVersion) {
+    throw new JobVersionConflictError(baseVersion, currentJob.version);
   }
 
-  const nextStatus = transitionJobStatus(job.status, newStatus);
+  /**
+   * Repeating the same state while still on the expected
+   * revision is a no-op. It does not create a new version.
+   */
+  if (currentJob.status === newStatus) {
+    return currentJob;
+  }
 
+  /**
+   * Step 2: Enforce the existing business state machine.
+   */
+  const nextStatus = transitionJobStatus(currentJob.status, newStatus);
+
+  /**
+   * Step 3: Compare-and-set.
+   *
+   * The update succeeds only if the document still has
+   * the version we inspected above.
+   *
+   * This second check prevents a concurrent request from
+   * slipping between our read and write.
+   */
   const updatedJob = await JobModel.findOneAndUpdate(
     {
       id,
       userId,
+      version: baseVersion,
     },
     {
       $set: {
         status: nextStatus,
       },
+      $inc: {
+        version: 1,
+      },
     },
     {
       new: true,
+      runValidators: true,
     },
   ).lean<Job>();
 
-  return updatedJob || undefined;
+  if (updatedJob) {
+    return updatedJob;
+  }
+
+  /**
+   * Another writer won the race after our initial read.
+   */
+  const latestJob = await JobModel.findOne({
+    id,
+    userId,
+  }).lean<Job>();
+
+  if (!latestJob) {
+    return undefined;
+  }
+
+  throw new JobVersionConflictError(baseVersion, latestJob.version);
 }
+
+// export async function updateJobStatus(
+//   id: string,
+//   userId: string,
+//   newStatus: JobStatus,
+// ): Promise<Job | undefined> {
+//   const job = await getJobById(id, userId);
+
+//   if (!job) {
+//     return undefined;
+//   }
+
+//   /**
+//    * Setting the same state twice is intentionally idempotent.
+//    *
+//    * This is important when the mobile app retries a mutation
+//    * after the server processed it but the response was lost.
+//    */
+//   if (job.status === newStatus) {
+//     return job;
+//   }
+
+//   const nextStatus = transitionJobStatus(job.status, newStatus);
+
+//   const updatedJob = await JobModel.findOneAndUpdate(
+//     {
+//       id,
+//       userId,
+//     },
+//     {
+//       $set: {
+//         status: nextStatus,
+//       },
+//     },
+//     {
+//       new: true,
+//     },
+//   ).lean<Job>();
+
+//   return updatedJob || undefined;
+// }
 
 /**
  * STATIC DATA

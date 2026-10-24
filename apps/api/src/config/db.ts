@@ -1,12 +1,22 @@
 import mongoose from "mongoose";
+import { backfillJobVersions } from "../services/job-version-migration.service";
 
-export async function connectToDatabase() {
+export async function connectToDatabase(): Promise<void> {
+  const mongoUri = process.env.MONGODB_URI;
+
+  if (!mongoUri) {
+    throw new Error("MONGODB_URI is not configured");
+  }
+
   try {
-    await mongoose.connect(process.env.MONGODB_URI!);
+    await mongoose.connect(mongoUri);
 
-    console.log("✅ Connected to MongoDB");
-  } catch (err: any) {
-    console.error("❌ Failed to connect to MongoDB:", err.message);
-    process.exit(1);
+    console.log("Connected to MongoDB");
+
+    // Run the job version migration after connecting to the database
+    await backfillJobVersions();
+  } catch (error) {
+    console.error("Failed to initialize MongoDB:", error);
+    throw error;
   }
 }

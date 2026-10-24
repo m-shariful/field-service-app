@@ -1,4 +1,7 @@
+import { describe, expect, it, vi } from "vitest";
 import {
+  acknowledgeServerJob,
+  applyServerJobFromPull,
   clearUserJobs,
   getLocalJob,
   listLocalJobs,
@@ -6,7 +9,6 @@ import {
   replaceServerSnapshot,
   upsertServerJob,
 } from "../local-jobs.repository";
-import { describe, expect, it, vi } from "vitest";
 
 import type { SQLiteDatabase } from "expo-sqlite";
 
@@ -25,6 +27,8 @@ const serverJob = {
 
   createdAt: "2026-10-01T10:00:00.000Z",
   updatedAt: "2026-10-01T10:00:00.000Z",
+
+  version: 1,
 };
 
 function createFakeDatabase() {
@@ -48,6 +52,26 @@ function createFakeDatabase() {
   };
 
   return db as unknown as SQLiteDatabase;
+}
+
+function createPendingJobRow(overrides = {}) {
+  return {
+    id: "job-001",
+    user_id: userId,
+    title: "Repair generator",
+    scheduled_at: "2026-10-10T10:00:00.000Z",
+    location: "Rajshahi",
+    status: "in_progress",
+    priority: "high",
+    created_at: "2026-10-01T10:00:00.000Z",
+    updated_at: "2026-10-01T10:00:00.000Z",
+    server_updated_at: "2026-10-01T10:00:00.000Z",
+    server_version: 1,
+    local_updated_at: "2026-10-02T10:00:00.000Z",
+    sync_status: "pending_update",
+    deleted_at: null,
+    ...overrides,
+  };
 }
 
 describe("local jobs repository", () => {
@@ -78,6 +102,7 @@ describe("local jobs repository", () => {
 
       syncStatus: "synced",
       deletedAt: null,
+      version: 1,
     });
   });
 
@@ -195,5 +220,108 @@ describe("local jobs repository", () => {
     expect(db.withTransactionAsync).toHaveBeenCalledTimes(1);
 
     expect(db.runAsync).toHaveBeenCalled();
+  });
+
+  it("stores the latest server version during pull without overwriting local edits", async () => {
+    const db = createFakeDatabase();
+
+    const incomingJob = {
+      ...serverJob,
+      status: "scheduled" as const,
+      updatedAt: "2026-10-03T10:00:00.000Z",
+      version: 2,
+    };
+
+    const getFirstAsyncMock = db.getFirstAsync as unknown as ReturnType<
+      typeof vi.fn
+    >;
+
+    getFirstAsyncMock
+      .mockResolvedValueOnce(createPendingJobRow())
+      .mockResolvedValueOnce(
+        createPendingJobRow({
+          server_updated_at: incomingJob.updatedAt,
+          server_version: 2,
+        }),
+      );
+
+    const result = await applyServerJobFromPull(db, userId, incomingJob);
+
+    const runAsyncMock = db.runAsync as unknown as ReturnType<typeof vi.fn>;
+
+    const pullSql = String(runAsyncMock.mock.calls[0][0]);
+
+    expect(pullSql).toMatch(
+      /server_updated_at\s*=\s*\?,\s*server_version\s*=\s*\?/,
+    );
+
+    expect(db.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining("server_version = ?"),
+      incomingJob.updatedAt,
+      2,
+      incomingJob.id,
+      userId,
+    );
+
+    // Local unsynchronized state must remain visible.
+    expect(result.status).toBe("in_progress");
+    expect(result.syncStatus).toBe("pending_update");
+
+    // The latest server revision must be preserved.
+    expect(result.version).toBe(2);
+  });
+
+  it("stores the acknowledged server version when more mutations remain", async () => {
+    const db = createFakeDatabase();
+
+    const acknowledgedJob = {
+      ...serverJob,
+      status: "in_progress" as const,
+      updatedAt: "2026-10-03T11:00:00.000Z",
+      version: 2,
+    };
+
+    const getFirstAsyncMock = db.getFirstAsync as unknown as ReturnType<
+      typeof vi.fn
+    >;
+
+    getFirstAsyncMock
+      .mockResolvedValueOnce(
+        createPendingJobRow({
+          status: "completed",
+          server_version: 1,
+        }),
+      )
+      .mockResolvedValueOnce(
+        createPendingJobRow({
+          status: "completed",
+          server_updated_at: acknowledgedJob.updatedAt,
+          server_version: 2,
+          sync_status: "pending_update",
+        }),
+      );
+
+    const result = await acknowledgeServerJob(
+      db,
+      userId,
+      acknowledgedJob,
+      true,
+    );
+
+    expect(db.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining("server_version = ?"),
+      acknowledgedJob.createdAt,
+      acknowledgedJob.updatedAt,
+      2,
+      acknowledgedJob.id,
+      userId,
+    );
+
+    // Keep the later local mutation visible.
+    expect(result.status).toBe("completed");
+    expect(result.syncStatus).toBe("pending_update");
+
+    // Save the revision returned by the server.
+    expect(result.version).toBe(2);
   });
 });

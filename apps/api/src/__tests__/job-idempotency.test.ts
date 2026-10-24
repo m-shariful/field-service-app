@@ -118,6 +118,7 @@ describe("job idempotency", () => {
       .set("Idempotency-Key", "mutation-update-001")
       .send({
         status: "in_progress",
+        baseVersion: 1,
       });
 
     expect(firstResponse.status).toBe(200);
@@ -128,6 +129,7 @@ describe("job idempotency", () => {
       .set("Idempotency-Key", "mutation-update-001")
       .send({
         status: "in_progress",
+        baseVersion: 1,
       });
 
     expect(secondResponse.status).toBe(200);

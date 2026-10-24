@@ -1,16 +1,3 @@
-// export type JobStatus = "scheduled" | "in_progress" | "completed";
-
-// export type JobPriority = "low" | "normal" | "high" | "urgent";
-
-// export interface Job {
-//   id: string;
-//   title: string;
-//   scheduledAt: string;
-//   location: string;
-//   status: JobStatus;
-//   priority: JobPriority;
-// }
-
 import { Schema, model } from "mongoose";
 
 export type JobStatus = "scheduled" | "in_progress" | "completed";
@@ -25,6 +12,14 @@ export interface Job {
   location: string;
   status: JobStatus;
   priority: JobPriority;
+
+  /**
+   * Optimistic concurrency version.
+   *
+   * Starts at 1 and increments whenever a successful
+   * state-changing update is committed.
+   */
+  version: number;
 }
 
 const jobSchema = new Schema<Job>(
@@ -63,9 +58,18 @@ const jobSchema = new Schema<Job>(
       enum: ["low", "medium", "high", "urgent"],
       required: true,
     },
+    version: {
+      type: Number,
+      required: true,
+      default: 1,
+      min: 1,
+    },
   },
   {
     timestamps: true,
+
+    // We use our explicit `version` field instead of __v.
+    versionKey: false,
   },
 );
 

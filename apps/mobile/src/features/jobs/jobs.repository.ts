@@ -3,16 +3,20 @@ import {
   getLocalJob,
   insertLocalJob,
   listLocalJobs,
+  markLocalJobConflict,
   replaceServerSnapshot,
   updateLocalJobStatus,
   upsertServerJob,
 } from "@/repositories/local-jobs.repository";
+import {
+  enqueueMutation,
+  markEntityMutationsConflict,
+} from "@/repositories/sync-queue.repository";
 import type { Job, JobPriority } from "./types";
 
 import { ApiError } from "@/api/api-error";
 import { getDatabase } from "@/db/database";
 import type { LocalJob } from "@/db/types";
-import { enqueueMutation } from "@/repositories/sync-queue.repository";
 import { useAuthStore } from "@/stores/auth.store";
 
 export interface JobsSyncResponse {
@@ -165,6 +169,8 @@ async function createLocalJob(
     syncStatus: "pending_create",
 
     deletedAt: null,
+
+    version: null,
   };
 
   await db.withTransactionAsync(async () => {
@@ -190,6 +196,7 @@ async function createLocalJob(
         scheduledAt: localJob.scheduledAt,
         location: localJob.location,
         priority: localJob.priority,
+        version: 1,
       },
     });
   });
@@ -201,6 +208,7 @@ async function updateLocalJobStatusOffline(
   userId: string,
   id: string,
   status: Job["status"],
+  baseVersion: number | null, // caller provides version for conflict detection
 ): Promise<Job> {
   const db = await getDatabase();
 
@@ -210,7 +218,7 @@ async function updateLocalJobStatusOffline(
     throw new Error("LOCAL_JOB_NOT_FOUND");
   }
 
-  const baseVersion = existingJob.serverUpdatedAt;
+  // const baseVersion = existingJob.version;
 
   let updatedJob: LocalJob;
 
@@ -329,19 +337,24 @@ export async function getJobById(id: string): Promise<Job> {
 export async function updateJobStatus(
   id: string,
   status: Job["status"],
+  baseVersion: number | null,
 ): Promise<Job> {
   const userId = getCurrentUserId();
 
-  /**
-   * Explicit offline mode.
-   */
+  // Offline mode: preserve the version the user edited.
   if (isOfflineSession()) {
-    return updateLocalJobStatusOffline(userId, id, status);
+    return updateLocalJobStatusOffline(userId, id, status, baseVersion);
+  }
+
+  // A server update cannot use a missing server revision.
+  if (baseVersion === null) {
+    throw new Error("JOB_SERVER_VERSION_REQUIRED");
   }
 
   try {
     const response = await apiPatch<JobResponse>(`/api/jobs/${id}/status`, {
       status,
+      baseVersion,
     });
 
     await cacheServerJob(userId, response.data);
@@ -355,10 +368,33 @@ export async function updateJobStatus(
      * A 4xx business/domain response remains authoritative.
      */
     if (error instanceof ApiError) {
+      if (error.status === 409 && error.code === "JOB_VERSION_CONFLICT") {
+        // Conflict detection succeeded; retain the local state
+        // so the next milestone can resolve it deliberately.
+        try {
+          const db = await getDatabase();
+          await markLocalJobConflict(db, userId, id);
+          await markEntityMutationsConflict(
+            db,
+            userId,
+            "job",
+            id,
+            `${error.status}:${error.code ?? "API_ERROR"}:${error.message}`,
+          );
+        } catch (cacheError) {
+          console.warn(
+            "Failed to mark the local job as conflicted:",
+            cacheError,
+          );
+        }
+      }
+
+      // Do not turn a server conflict or other API rejection
+      // into a new offline mutation.
       throw error;
     }
 
-    return updateLocalJobStatusOffline(userId, id, status);
+    return updateLocalJobStatusOffline(userId, id, status, baseVersion);
   }
 }
 

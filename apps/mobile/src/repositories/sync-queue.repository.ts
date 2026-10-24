@@ -264,6 +264,41 @@ export async function markMutationSyncing(
   );
 }
 
+/**
+ * Persist a finalized mutation payload before making the request.
+ *
+ * This is important for idempotency: if the request succeeds on the
+ * server but the response is lost, a retry must send the same payload.
+ */
+export async function updateMutationPayload(
+  db: SQLiteDatabase,
+  userId: string,
+  queueId: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const now = new Date().toISOString();
+
+  const result = await db.runAsync(
+    `
+      UPDATE sync_queue
+      SET
+        payload_json = ?,
+        updated_at = ?
+      WHERE id = ?
+        AND user_id = ?
+        AND status = 'syncing'
+    `,
+    JSON.stringify(payload),
+    now,
+    queueId,
+    userId,
+  );
+
+  if (result.changes !== 1) {
+    throw new Error("SYNC_MUTATION_PAYLOAD_UPDATE_FAILED");
+  }
+}
+
 export async function markMutationRetry(
   db: SQLiteDatabase,
   userId: string,
@@ -436,6 +471,40 @@ export async function recoverStaleSyncingMutations(
     now,
     userId,
     staleBefore.toISOString(),
+  );
+}
+
+export async function markEntityMutationsConflict(
+  db: SQLiteDatabase,
+  userId: string,
+  entityType: SyncEntityType,
+  entityId: string,
+  errorMessage: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+
+  await db.runAsync(
+    `
+      UPDATE sync_queue
+      SET
+        status = 'conflict',
+        next_attempt_at = NULL,
+        last_error = ?,
+        updated_at = ?
+      WHERE user_id = ?
+        AND entity_type = ?
+        AND entity_id = ?
+        AND status IN (
+          'pending',
+          'retry',
+          'syncing'
+        )
+    `,
+    errorMessage,
+    now,
+    userId,
+    entityType,
+    entityId,
   );
 }
 

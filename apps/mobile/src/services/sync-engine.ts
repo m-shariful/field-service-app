@@ -1,23 +1,26 @@
 import { apiPatch, apiPost } from "@/api/client";
 import {
   acknowledgeServerJob,
+  getLocalJob,
   markLocalJobConflict,
 } from "@/repositories/local-jobs.repository";
 import {
   hasPendingMutationsForEntity,
   listDueMutations,
-  markMutationConflict,
+  markEntityMutationsConflict,
   markMutationFailed,
   markMutationRetry,
   markMutationSynced,
   markMutationSyncing,
   recoverStaleSyncingMutations,
+  updateMutationPayload,
 } from "@/repositories/sync-queue.repository";
 
 import { ApiError } from "@/api/api-error";
 import { getDatabase } from "@/db/database";
 import type { Job } from "@/features/jobs/types";
 import { useAuthStore } from "@/stores/auth.store";
+import type { SQLiteDatabase } from "expo-sqlite";
 
 const SYNC_BATCH_SIZE = 20;
 
@@ -87,7 +90,68 @@ async function syncUpdateMutation(
   return response.data;
 }
 
+async function prepareUpdatePayload(
+  db: SQLiteDatabase,
+  userId: string,
+  mutation: Awaited<ReturnType<typeof listDueMutations>>[number],
+): Promise<Record<string, unknown>> {
+  const baseVersion = mutation.payload.baseVersion;
+
+  /**
+   * Existing numeric versions are immutable anchors.
+   *
+   * Do not replace them with a newer local version;
+   * a stale version must be allowed to produce a conflict.
+   */
+  if (typeof baseVersion === "number") {
+    if (!Number.isInteger(baseVersion) || baseVersion < 1) {
+      throw new Error("INVALID_JOB_BASE_VERSION");
+    }
+
+    return mutation.payload;
+  }
+
+  /**
+   * Only null has a defined meaning here:
+   * a locally created job had no server version when
+   * this update was originally queued.
+   *
+   * Missing or malformed values are not silently rebased.
+   */
+  if (baseVersion !== null) {
+    throw new Error("JOB_BASE_VERSION_MISSING_OR_INVALID");
+  }
+
+  const localJob = await getLocalJob(db, userId, mutation.entityId);
+
+  if (!localJob) {
+    throw new Error("LOCAL_JOB_NOT_FOUND");
+  }
+
+  if (localJob.version === null) {
+    throw new Error("JOB_SERVER_VERSION_REQUIRED");
+  }
+
+  const resolvedPayload: Record<string, unknown> = {
+    ...mutation.payload,
+    baseVersion: localJob.version,
+  };
+
+  /**
+   * Save before the network request, not after it.
+   * This keeps retries stable if the server succeeds
+   * but the mobile app never receives the response.
+   */
+  await updateMutationPayload(db, userId, mutation.id, resolvedPayload);
+
+  // Use the same finalized payload for this attempt.
+  mutation.payload = resolvedPayload;
+
+  return resolvedPayload;
+}
+
 async function executeMutation(
+  db: SQLiteDatabase,
   userId: string,
   mutation: Awaited<ReturnType<typeof listDueMutations>>[number],
 ): Promise<Job> {
@@ -95,12 +159,15 @@ async function executeMutation(
     case "create":
       return syncCreateMutation(userId, mutation.mutationId, mutation.payload);
 
-    case "update":
+    case "update": {
+      const payload = await prepareUpdatePayload(db, userId, mutation);
+
       return syncUpdateMutation(
         mutation.entityId,
         mutation.mutationId,
-        mutation.payload,
+        payload,
       );
+    }
 
     case "delete":
       throw new Error("JOB_DELETE_SYNC_NOT_IMPLEMENTED");
@@ -171,7 +238,15 @@ export async function syncPendingMutations(): Promise<SyncResult> {
     failed: 0,
   };
 
+  const conflictedEntities = new Set<string>();
+
   for (const mutation of mutations) {
+    const entityKey = `${mutation.entityType}:${mutation.entityId}`;
+
+    if (conflictedEntities.has(entityKey)) {
+      continue;
+    }
+
     result.processed += 1;
 
     await markMutationSyncing(db, userId, mutation.id);
@@ -179,7 +254,7 @@ export async function syncPendingMutations(): Promise<SyncResult> {
     const currentAttempt = mutation.attemptCount + 1;
 
     try {
-      const serverJob = await executeMutation(userId, mutation);
+      const serverJob = await executeMutation(db, userId, mutation);
 
       await markMutationSynced(db, userId, mutation.id);
 
@@ -219,16 +294,25 @@ export async function syncPendingMutations(): Promise<SyncResult> {
         break;
       }
 
-      /**
-       * 409 means the server has a domain/version conflict.
-       */
-      if (error instanceof ApiError && error.status === 409) {
-        await markMutationConflict(
+      if (
+        error instanceof ApiError &&
+        error.status === 409 &&
+        error.code === "JOB_VERSION_CONFLICT"
+      ) {
+        const errorMessage = getErrorMessage(error);
+
+        // Mark the current and all dependent queued mutations.
+        await markEntityMutationsConflict(
           db,
           userId,
-          mutation.id,
-          getErrorMessage(error),
+          mutation.entityType,
+          mutation.entityId,
+          errorMessage,
         );
+
+        // Do not process another mutation for this entity
+        // from the batch that was already loaded into memory.
+        conflictedEntities.add(`${mutation.entityType}:${mutation.entityId}`);
 
         if (mutation.entityType === "job") {
           await markLocalJobConflict(db, userId, mutation.entityId);

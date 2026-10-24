@@ -1,4 +1,12 @@
 import {
+  getJobActionLabel,
+  getNextJobStatus,
+} from "@/features/jobs/job-status";
+import { getJobById, updateJobStatus } from "@/features/jobs/jobs.repository";
+import type { Job, JobStatus } from "@/features/jobs/types";
+import { Stack, useLocalSearchParams } from "expo-router";
+import { useCallback, useEffect, useState } from "react";
+import {
   ActivityIndicator,
   Alert,
   Pressable,
@@ -8,14 +16,6 @@ import {
   Text,
   View,
 } from "react-native";
-import type { Job, JobStatus } from "@/features/jobs/types";
-import { Stack, useLocalSearchParams } from "expo-router";
-import {
-  getJobActionLabel,
-  getNextJobStatus,
-} from "@/features/jobs/job-status";
-import { getJobById, updateJobStatus } from "@/features/jobs/jobs.repository";
-import { useCallback, useEffect, useState } from "react";
 
 import { ApiError } from "@/api/api-error";
 import { formatJobDate } from "@/features/jobs/formatters";
@@ -94,20 +94,36 @@ export default function JobDetailsScreen() {
     };
   }, [fetchJob]);
 
-  async function handleStatusUpdate(status: JobStatus) {
+  async function handleStatusUpdate(
+    status: JobStatus,
+    baseVersion: Job["version"],
+  ) {
     try {
       setIsUpdating(true);
       setError(null);
 
-      const updatedJob = await updateJobStatus(id, status);
+      const updatedJob = await updateJobStatus(id, status, baseVersion);
 
       setJob(updatedJob);
     } catch (error) {
-      setError(
-        error instanceof ApiError
-          ? error.message
-          : "Failed to update job status.",
-      );
+      if (error instanceof ApiError && error.code === "JOB_VERSION_CONFLICT") {
+        setError(
+          "This job changed on the server. Refresh the job details before trying again.",
+        );
+      } else if (
+        error instanceof Error &&
+        error.message === "JOB_SERVER_VERSION_REQUIRED"
+      ) {
+        setError(
+          "This job has not synced with the server yet. Sync it before changing its status.",
+        );
+      } else {
+        setError(
+          error instanceof ApiError
+            ? error.message
+            : "Failed to update job status.",
+        );
+      }
     } finally {
       setIsUpdating(false);
     }
@@ -222,7 +238,8 @@ export default function JobDetailsScreen() {
                     },
                     {
                       text: actionLabel,
-                      onPress: () => handleStatusUpdate(nextStatus),
+                      onPress: () =>
+                        handleStatusUpdate(nextStatus, job.version),
                     },
                   ],
                 );

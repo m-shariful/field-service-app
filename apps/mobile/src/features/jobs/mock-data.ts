@@ -11,6 +11,7 @@ export const mockJobs: Job[] = [
     priority: "high",
     createdAt: "2026-10-01T10:00:00.000Z",
     updatedAt: "2026-10-08T09:00:00.000Z",
+    version: 1,
   },
   {
     id: "job-002",
@@ -22,6 +23,7 @@ export const mockJobs: Job[] = [
     priority: "medium",
     createdAt: "2026-10-01T10:00:00.000Z",
     updatedAt: "2026-10-08T09:00:00.000Z",
+    version: 1,
   },
   {
     id: "job-003",
@@ -33,5 +35,6 @@ export const mockJobs: Job[] = [
     priority: "low",
     createdAt: "2026-10-01T10:00:00.000Z",
     updatedAt: "2026-10-08T09:00:00.000Z",
+    version: 1,
   },
 ];

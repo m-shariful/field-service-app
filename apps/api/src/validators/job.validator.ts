@@ -89,6 +89,7 @@ const JOB_STATUSES = ["scheduled", "in_progress", "completed"] as const;
 
 interface UpdateJobStatusInput {
   status: JobStatus;
+  baseVersion: number;
 }
 
 export function validateUpdateJobStatusInput(input: unknown): {
@@ -98,7 +99,7 @@ export function validateUpdateJobStatusInput(input: unknown): {
 } {
   const errors: Record<string, string> = {};
 
-  if (!input || typeof input !== "object") {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
     return {
       success: false,
       errors: {
@@ -118,6 +119,14 @@ export function validateUpdateJobStatusInput(input: unknown): {
     errors.status = "Status must be scheduled, in_progress, or completed";
   }
 
+  if (
+    typeof body.baseVersion !== "number" ||
+    !Number.isInteger(body.baseVersion) ||
+    body.baseVersion < 1
+  ) {
+    errors.baseVersion = "baseVersion must be a positive integer";
+  }
+
   if (Object.keys(errors).length > 0) {
     return {
       success: false,
@@ -130,6 +139,7 @@ export function validateUpdateJobStatusInput(input: unknown): {
     errors: {},
     data: {
       status: body.status as JobStatus,
+      baseVersion: body.baseVersion as number,
     },
   };
 }

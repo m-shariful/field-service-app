@@ -39,6 +39,8 @@ function serializeJob(job: JobWithTimestamps): JobSyncItem {
 
     createdAt: job.createdAt.toISOString(),
     updatedAt: job.updatedAt.toISOString(),
+
+    version: job.version,
   };
 }
 

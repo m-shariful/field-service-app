@@ -4,6 +4,7 @@ import {
   executeIdempotently,
 } from "../services/idempotency.service";
 import {
+  JobVersionConflictError,
   createJob,
   getJobById,
   getJobs,
@@ -188,8 +189,27 @@ export async function updateJobStatusController(
         let job: Awaited<ReturnType<typeof updateJobStatus>>;
 
         try {
-          job = await updateJobStatus(id, userId, validation.data!.status);
+          const { status, baseVersion } = validation.data!;
+
+          job = await updateJobStatus(id, userId, status, baseVersion);
         } catch (error) {
+          if (error instanceof JobVersionConflictError) {
+            return {
+              statusCode: 409,
+              body: {
+                error: {
+                  code: "JOB_VERSION_CONFLICT",
+                  message:
+                    "This job was changed on the server. Refresh and resolve the conflict before retrying.",
+                  details: {
+                    expectedVersion: String(error.expectedVersion),
+                    currentVersion: String(error.currentVersion),
+                  },
+                },
+              },
+            };
+          }
+
           return {
             statusCode: 400,
             body: {

@@ -149,6 +149,14 @@ export const migrations: Migration[] = [
     );
   `,
   },
+  {
+    version: 4,
+    description: "Add server job version for conflict detection",
+    sql: `
+    ALTER TABLE jobs
+    ADD COLUMN server_version INTEGER;
+  `,
+  },
 ];
 
 export async function runMigrations(db: SQLiteDatabase): Promise<void> {

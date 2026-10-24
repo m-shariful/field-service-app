@@ -12,4 +12,10 @@ export interface Job {
   priority: JobPriority;
   createdAt: string;
   updatedAt: string;
+
+  /**
+   * Null means this is a locally created job that
+   * has not yet received a server revision.
+   */
+  version: number | null;
 }
