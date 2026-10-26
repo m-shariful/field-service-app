@@ -1,5 +1,6 @@
 import {
   createJobController,
+  deleteJobController,
   getJob,
   listJobs,
   syncJobs,
@@ -22,5 +23,6 @@ router.get("/sync", syncJobs);
 router.post("/", createJobController);
 router.get("/:id", getJob);
 router.patch("/:id/status", updateJobStatusController);
+router.delete("/:id", deleteJobController);
 
 export default router;

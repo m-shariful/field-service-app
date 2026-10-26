@@ -143,3 +143,44 @@ export function validateUpdateJobStatusInput(input: unknown): {
     },
   };
 }
+
+export function validateDeleteJobInput(input: unknown): {
+  success: boolean;
+  errors: Record<string, string>;
+  data?: { baseVersion: number };
+} {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return {
+      success: false,
+      errors: {
+        body: "Request body must be an object",
+      },
+    };
+  }
+
+  const body = input as Record<string, unknown>;
+  const errors: Record<string, string> = {};
+
+  if (
+    typeof body.baseVersion !== "number" ||
+    !Number.isInteger(body.baseVersion) ||
+    body.baseVersion < 1
+  ) {
+    errors.baseVersion = "baseVersion must be a positive integer";
+  }
+
+  if (Object.keys(errors).length > 0) {
+    return {
+      success: false,
+      errors,
+    };
+  }
+
+  return {
+    success: true,
+    errors: {},
+    data: {
+      baseVersion: body.baseVersion as number,
+    },
+  };
+}

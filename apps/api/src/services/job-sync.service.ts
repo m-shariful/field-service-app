@@ -12,12 +12,19 @@ const MAX_LIMIT = 100;
 interface JobWithTimestamps extends Job {
   createdAt: Date;
   updatedAt: Date;
+  deletedAt?: Date | null;
 }
 
-export interface JobSyncItem extends Job {
+// export interface JobSyncItem extends Job {
+//   createdAt: string;
+//   updatedAt: string;
+// }
+
+export type JobSyncItem = Omit<Job, "deletedAt"> & {
   createdAt: string;
   updatedAt: string;
-}
+  deletedAt?: string | null;
+};
 
 export interface JobSyncResult {
   items: JobSyncItem[];
@@ -41,6 +48,7 @@ function serializeJob(job: JobWithTimestamps): JobSyncItem {
     updatedAt: job.updatedAt.toISOString(),
 
     version: job.version,
+    deletedAt: job.deletedAt?.toISOString() ?? null,
   };
 }
 

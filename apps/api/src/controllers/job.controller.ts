@@ -4,8 +4,10 @@ import {
   executeIdempotently,
 } from "../services/idempotency.service";
 import {
+  JobDeletedError,
   JobVersionConflictError,
   createJob,
+  deleteJob,
   getJobById,
   getJobs,
   updateJobStatus,
@@ -13,6 +15,7 @@ import {
 import { sendError, sendSuccess } from "../utils/api-response";
 import {
   validateCreateJobInput,
+  validateDeleteJobInput,
   validateUpdateJobStatusInput,
 } from "../validators/job.validator";
 
@@ -193,6 +196,18 @@ export async function updateJobStatusController(
 
           job = await updateJobStatus(id, userId, status, baseVersion);
         } catch (error) {
+          if (error instanceof JobDeletedError) {
+            return {
+              statusCode: 409,
+              body: {
+                error: {
+                  code: "JOB_ALREADY_DELETED",
+                  message: "This job has already been deleted.",
+                },
+              },
+            };
+          }
+
           if (error instanceof JobVersionConflictError) {
             return {
               statusCode: 409,
@@ -320,6 +335,98 @@ export async function syncJobs(req: AuthenticatedRequest, res: Response) {
   } catch (error) {
     if (error instanceof Error && error.message === "INVALID_SYNC_CURSOR") {
       return sendError(res, "INVALID_SYNC_CURSOR", "Invalid sync cursor", 400);
+    }
+
+    throw error;
+  }
+}
+
+export async function deleteJobController(
+  req: AuthenticatedRequest,
+  res: Response,
+) {
+  const userId = getAuthenticatedUserId(req);
+
+  if (!userId) {
+    return sendError(res, "UNAUTHORIZED", "Authentication required", 401);
+  }
+
+  const { id } = req.params;
+
+  if (typeof id !== "string") {
+    return sendError(res, "INVALID_JOB_ID", "Invalid job id", 400);
+  }
+
+  const validation = validateDeleteJobInput(req.body);
+
+  if (!validation.success || !validation.data) {
+    return sendError(
+      res,
+      "VALIDATION_ERROR",
+      "Invalid delete request",
+      400,
+      validation.errors,
+    );
+  }
+
+  try {
+    const result = await executeIdempotently({
+      userId,
+      key: getIdempotencyKey(req),
+      scope: `jobs:delete:${id}`,
+      requestPayload: validation.data,
+
+      execute: async () => {
+        try {
+          const job = await deleteJob(id, userId, validation.data!.baseVersion);
+
+          if (!job) {
+            return {
+              statusCode: 404,
+              body: {
+                error: {
+                  code: "JOB_NOT_FOUND",
+                  message: "Job not found",
+                },
+              },
+            };
+          }
+
+          return {
+            statusCode: 200,
+            body: {
+              data: job,
+            },
+          };
+        } catch (error) {
+          if (error instanceof JobVersionConflictError) {
+            return {
+              statusCode: 409,
+              body: {
+                error: {
+                  code: "JOB_VERSION_CONFLICT",
+                  message:
+                    "This job was changed on the server. Refresh before deleting it.",
+                  details: {
+                    expectedVersion: String(error.expectedVersion),
+                    currentVersion: String(error.currentVersion),
+                  },
+                },
+              },
+            };
+          }
+
+          throw error;
+        }
+      },
+    });
+
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    const idempotencyResponse = handleIdempotencyError(res, error);
+
+    if (idempotencyResponse) {
+      return idempotencyResponse;
     }
 
     throw error;

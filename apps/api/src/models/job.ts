@@ -20,6 +20,8 @@ export interface Job {
    * state-changing update is committed.
    */
   version: number;
+
+  deletedAt?: Date | null;
 }
 
 const jobSchema = new Schema<Job>(
@@ -63,6 +65,10 @@ const jobSchema = new Schema<Job>(
       required: true,
       default: 1,
       min: 1,
+    },
+    deletedAt: {
+      type: Date,
+      default: null,
     },
   },
   {

@@ -12,8 +12,15 @@ export class JobVersionConflictError extends Error {
   }
 }
 
+export class JobDeletedError extends Error {
+  constructor() {
+    super("JOB_ALREADY_DELETED");
+    this.name = "JobDeletedError";
+  }
+}
+
 export async function getJobs(userId: string): Promise<Job[]> {
-  return await JobModel.find({ userId }).lean<Job[]>();
+  return await JobModel.find({ userId, deletedAt: null }).lean<Job[]>();
 }
 
 export async function getJobById(
@@ -24,6 +31,7 @@ export async function getJobById(
     (await JobModel.findOne({
       id,
       userId,
+      deletedAt: null,
     }).lean<Job>()) || undefined
   );
 }
@@ -59,6 +67,7 @@ export async function createJob(
       }
 
       const sameRequest =
+        existingJob.deletedAt === null &&
         existingJob.title === input.title &&
         existingJob.scheduledAt === input.scheduledAt &&
         existingJob.location === input.location &&
@@ -102,6 +111,13 @@ export async function updateJobStatus(
   }
 
   /**
+   * A deleted job cannot be updated.
+   */
+  if (currentJob.deletedAt != null) {
+    throw new JobDeletedError();
+  }
+
+  /**
    * Step 1: Check the revision the client edited.
    */
   if (currentJob.version !== baseVersion) {
@@ -135,6 +151,7 @@ export async function updateJobStatus(
       id,
       userId,
       version: baseVersion,
+      deletedAt: null,
     },
     {
       $set: {
@@ -160,10 +177,81 @@ export async function updateJobStatus(
   const latestJob = await JobModel.findOne({
     id,
     userId,
+    deletedAt: null,
   }).lean<Job>();
 
   if (!latestJob) {
     return undefined;
+  }
+
+  if (latestJob.deletedAt != null) {
+    throw new JobDeletedError();
+  }
+
+  throw new JobVersionConflictError(baseVersion, latestJob.version);
+}
+
+export async function deleteJob(
+  id: string,
+  userId: string,
+  baseVersion: number,
+): Promise<Job | undefined> {
+  const currentJob = await JobModel.findOne({
+    id,
+    userId,
+  }).lean<Job>();
+
+  if (!currentJob) {
+    return undefined;
+  }
+
+  // Deleting a tombstone again is a successful no-op.
+  if (currentJob.deletedAt != null) {
+    return currentJob;
+  }
+
+  if (currentJob.version !== baseVersion) {
+    throw new JobVersionConflictError(baseVersion, currentJob.version);
+  }
+
+  const deletedJob = await JobModel.findOneAndUpdate(
+    {
+      id,
+      userId,
+      version: baseVersion,
+      deletedAt: null,
+    },
+    {
+      $set: {
+        deletedAt: new Date(),
+      },
+      $inc: {
+        version: 1,
+      },
+    },
+    {
+      new: true,
+      runValidators: true,
+    },
+  ).lean<Job>();
+
+  if (deletedJob) {
+    return deletedJob;
+  }
+
+  // Another request may have changed or deleted this job
+  // after our first read.
+  const latestJob = await JobModel.findOne({
+    id,
+    userId,
+  }).lean<Job>();
+
+  if (!latestJob) {
+    return undefined;
+  }
+
+  if (latestJob.deletedAt != null) {
+    return latestJob;
   }
 
   throw new JobVersionConflictError(baseVersion, latestJob.version);
