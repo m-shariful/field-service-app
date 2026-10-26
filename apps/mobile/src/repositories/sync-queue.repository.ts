@@ -508,4 +508,24 @@ export async function markEntityMutationsConflict(
   );
 }
 
+export async function deleteConflictedMutationsForEntity(
+  db: SQLiteDatabase,
+  userId: string,
+  entityType: SyncEntityType,
+  entityId: string,
+): Promise<void> {
+  await db.runAsync(
+    `
+      DELETE FROM sync_queue
+      WHERE user_id = ?
+        AND entity_type = ?
+        AND entity_id = ?
+        AND status = 'conflict'
+    `,
+    userId,
+    entityType,
+    entityId,
+  );
+}
+
 export { mapRowToSyncQueueItem };

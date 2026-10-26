@@ -19,6 +19,11 @@ import {
 
 import { ApiError } from "@/api/api-error";
 import { formatJobDate } from "@/features/jobs/formatters";
+import {
+  getLatestServerJobForConflict,
+  resolveJobConflict,
+  type JobConflictResolution,
+} from "@/features/jobs/job-conflict-resolution.service";
 
 export default function JobDetailsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -28,6 +33,28 @@ export default function JobDetailsScreen() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [latestServerJob, setLatestServerJob] = useState<Job | null>(null);
+  const [isResolvingConflict, setIsResolvingConflict] = useState(false);
+  const [resolutionMessage, setResolutionMessage] = useState<string | null>(
+    null,
+  );
+
+  const fetchConflictServerSnapshot = useCallback(
+    async (candidate: Job): Promise<Job | null> => {
+      if (candidate.syncStatus !== "conflict") {
+        return null;
+      }
+
+      try {
+        return await getLatestServerJobForConflict(id);
+      } catch {
+        // The local conflict remains visible if the server is unreachable.
+        return null;
+      }
+    },
+    [id],
+  );
 
   const fetchJob = useCallback(async () => {
     return getJobById(id);
@@ -45,6 +72,7 @@ export default function JobDetailsScreen() {
         const data = await fetchJob();
 
         setJob(data);
+        setLatestServerJob(await fetchConflictServerSnapshot(data));
       } catch (error) {
         setError(
           error instanceof ApiError
@@ -56,19 +84,24 @@ export default function JobDetailsScreen() {
         setIsRefreshing(false);
       }
     },
-    [fetchJob],
+    [fetchJob, fetchConflictServerSnapshot],
   );
 
   useEffect(() => {
     let cancelled = false;
 
     fetchJob()
-      .then((data) => {
+      .then(async (data) => {
         if (cancelled) {
           return;
         }
 
         setJob(data);
+        const serverSnapshot = await fetchConflictServerSnapshot(data);
+
+        if (!cancelled) {
+          setLatestServerJob(serverSnapshot);
+        }
       })
       .catch((error) => {
         if (cancelled) {
@@ -92,7 +125,7 @@ export default function JobDetailsScreen() {
     return () => {
       cancelled = true;
     };
-  }, [fetchJob]);
+  }, [fetchJob, fetchConflictServerSnapshot]);
 
   async function handleStatusUpdate(
     status: JobStatus,
@@ -126,6 +159,42 @@ export default function JobDetailsScreen() {
       }
     } finally {
       setIsUpdating(false);
+    }
+  }
+
+  async function handleResolveConflict(resolution: JobConflictResolution) {
+    try {
+      setIsResolvingConflict(true);
+      setError(null);
+      setResolutionMessage(null);
+
+      const resolvedJob = await resolveJobConflict(id, resolution);
+
+      setJob(resolvedJob);
+      setLatestServerJob(null);
+
+      setResolutionMessage(
+        resolvedJob.syncStatus === "pending_update"
+          ? "Your change is saved on this device and queued to sync."
+          : "The job now matches the latest server version.",
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === "JOB_CONFLICT_CHANGE_NOT_APPLICABLE"
+      ) {
+        setError(
+          "The latest server status does not allow this change. Use the server version to resolve the conflict.",
+        );
+      } else {
+        setError(
+          error instanceof Error
+            ? error.message
+            : "Failed to resolve the job conflict.",
+        );
+      }
+    } finally {
+      setIsResolvingConflict(false);
     }
   }
 
@@ -165,6 +234,12 @@ export default function JobDetailsScreen() {
   const nextStatus = getNextJobStatus(job.status);
   const actionLabel = getJobActionLabel(job.status);
 
+  const canReapplyLocalChange = Boolean(
+    latestServerJob &&
+    latestServerJob.status !== job.status &&
+    getNextJobStatus(latestServerJob.status) === job.status,
+  );
+
   return (
     <>
       <Stack.Screen
@@ -203,6 +278,88 @@ export default function JobDetailsScreen() {
             <StatusIndicator status={job.status} />
           </View>
 
+          {job.syncStatus === "conflict" && (
+            <View style={styles.conflictCard}>
+              <Text style={styles.conflictTitle}>
+                Changes need your decision
+              </Text>
+
+              <Text style={styles.conflictText}>
+                Your device: {formatStatus(job.status)}
+              </Text>
+
+              {latestServerJob ? (
+                <>
+                  <Text style={styles.conflictText}>
+                    Latest server version:{" "}
+                    {formatStatus(latestServerJob.status)}
+                  </Text>
+
+                  <Text style={styles.conflictText}>
+                    Server revision: {latestServerJob.version}
+                  </Text>
+
+                  {job.status === latestServerJob.status ? (
+                    <Text style={styles.conflictHint}>
+                      The status already matches the server. Use the server
+                      version to clear the conflict.
+                    </Text>
+                  ) : !canReapplyLocalChange ? (
+                    <Text style={styles.conflictHint}>
+                      Your change is not a valid next transition from the latest
+                      server status.
+                    </Text>
+                  ) : (
+                    <Text style={styles.conflictHint}>
+                      You can reapply your change against the latest server
+                      revision.
+                    </Text>
+                  )}
+                </>
+              ) : (
+                <Text style={styles.conflictHint}>
+                  The latest server status could not be loaded. Check your
+                  connection and refresh before resolving this conflict.
+                </Text>
+              )}
+
+              <Pressable
+                disabled={isResolvingConflict}
+                onPress={() => handleResolveConflict("use_server")}
+                style={[
+                  styles.conflictButton,
+                  isResolvingConflict && styles.actionDisabled,
+                ]}
+              >
+                <Text style={styles.conflictButtonText}>
+                  Use server version
+                </Text>
+              </Pressable>
+
+              <Pressable
+                disabled={isResolvingConflict || !canReapplyLocalChange}
+                onPress={() => handleResolveConflict("keep_local")}
+                style={[
+                  styles.conflictButtonSecondary,
+                  (isResolvingConflict || !canReapplyLocalChange) &&
+                    styles.actionDisabled,
+                ]}
+              >
+                <Text style={styles.conflictButtonSecondaryText}>
+                  Retry my change
+                </Text>
+              </Pressable>
+            </View>
+          )}
+
+          {resolutionMessage && (
+            <View style={styles.resolutionMessageCard}>
+              <Text style={styles.resolutionMessageText}>
+                {resolutionMessage}
+              </Text>
+            </View>
+          )}
+
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Job information</Text>
 
@@ -222,7 +379,7 @@ export default function JobDetailsScreen() {
           )}
         </ScrollView>
 
-        {nextStatus && actionLabel && (
+        {job.syncStatus !== "conflict" && nextStatus && actionLabel && (
           <View style={styles.actionContainer}>
             <Pressable
               disabled={isUpdating}
@@ -595,5 +752,83 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 14,
     fontWeight: "700",
+  },
+
+  conflictCard: {
+    marginTop: 20,
+    padding: 18,
+    borderRadius: 16,
+    backgroundColor: "#FFF7ED",
+    borderWidth: 1,
+    borderColor: "#FDBA74",
+  },
+
+  conflictTitle: {
+    marginBottom: 12,
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#9A3412",
+  },
+
+  conflictText: {
+    marginTop: 5,
+    fontSize: 14,
+    lineHeight: 20,
+    color: "#7C2D12",
+  },
+
+  conflictHint: {
+    marginTop: 12,
+    marginBottom: 8,
+    fontSize: 13,
+    lineHeight: 19,
+    color: "#9A3412",
+  },
+
+  conflictButton: {
+    minHeight: 46,
+    marginTop: 10,
+    borderRadius: 12,
+    backgroundColor: "#9A3412",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  conflictButtonText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+
+  conflictButtonSecondary: {
+    minHeight: 46,
+    marginTop: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#C2410C",
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  conflictButtonSecondaryText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#9A3412",
+  },
+
+  resolutionMessageCard: {
+    marginTop: 16,
+    padding: 14,
+    borderRadius: 12,
+    backgroundColor: "#F0FDF4",
+    borderWidth: 1,
+    borderColor: "#BBF7D0",
+  },
+
+  resolutionMessageText: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: "#166534",
   },
 });

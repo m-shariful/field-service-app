@@ -1,3 +1,5 @@
+import type { SyncStatus } from "@/db/types";
+
 export type JobStatus = "scheduled" | "in_progress" | "completed";
 
 export type JobPriority = "low" | "medium" | "high" | "urgent";
@@ -18,4 +20,6 @@ export interface Job {
    * has not yet received a server revision.
    */
   version: number | null;
+
+  syncStatus?: SyncStatus;
 }

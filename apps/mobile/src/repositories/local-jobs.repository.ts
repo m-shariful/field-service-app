@@ -570,4 +570,122 @@ export async function markLocalJobConflict(
   );
 }
 
+export async function replaceConflictedLocalJobWithServer(
+  db: SQLiteDatabase,
+  userId: string,
+  job: ServerJob,
+): Promise<LocalJob> {
+  if (job.userId !== userId) {
+    throw new Error("Cannot persist a job belonging to another user");
+  }
+
+  const existing = await getLocalJob(db, userId, job.id);
+
+  if (!existing || existing.syncStatus !== "conflict") {
+    throw new Error("LOCAL_JOB_HAS_NO_CONFLICT");
+  }
+
+  const resolved = mapServerJobToLocalJob(job, userId);
+
+  const result = await db.runAsync(
+    `
+      UPDATE jobs
+      SET
+        title = ?,
+        scheduled_at = ?,
+        location = ?,
+        status = ?,
+        priority = ?,
+        created_at = ?,
+        updated_at = ?,
+        server_updated_at = ?,
+        server_version = ?,
+        local_updated_at = ?,
+        sync_status = 'synced',
+        deleted_at = NULL
+      WHERE id = ?
+        AND user_id = ?
+        AND sync_status = 'conflict'
+    `,
+    resolved.title,
+    resolved.scheduledAt,
+    resolved.location,
+    resolved.status,
+    resolved.priority,
+    resolved.createdAt,
+    resolved.updatedAt,
+    resolved.serverUpdatedAt,
+    resolved.version,
+    resolved.localUpdatedAt,
+    resolved.id,
+    userId,
+  );
+
+  if (result.changes !== 1) {
+    throw new Error("LOCAL_JOB_CONFLICT_RESOLVE_FAILED");
+  }
+
+  const updated = await getLocalJob(db, userId, job.id);
+
+  if (!updated) {
+    throw new Error("LOCAL_JOB_CONFLICT_RESOLVE_FAILED");
+  }
+
+  return updated;
+}
+
+export async function prepareConflictedLocalJobForRetry(
+  db: SQLiteDatabase,
+  userId: string,
+  job: ServerJob,
+): Promise<LocalJob> {
+  if (job.userId !== userId) {
+    throw new Error("Cannot persist a job belonging to another user");
+  }
+
+  if (
+    typeof job.version !== "number" ||
+    !Number.isInteger(job.version) ||
+    job.version < 1
+  ) {
+    throw new Error("JOB_SERVER_VERSION_REQUIRED");
+  }
+
+  const existing = await getLocalJob(db, userId, job.id);
+
+  if (!existing || existing.syncStatus !== "conflict") {
+    throw new Error("LOCAL_JOB_HAS_NO_CONFLICT");
+  }
+
+  const result = await db.runAsync(
+    `
+      UPDATE jobs
+      SET
+        server_updated_at = ?,
+        server_version = ?,
+        sync_status = 'pending_update'
+      WHERE id = ?
+        AND user_id = ?
+        AND sync_status = 'conflict'
+        AND deleted_at IS NULL
+    `,
+    job.updatedAt,
+    job.version,
+    job.id,
+    userId,
+  );
+
+  if (result.changes !== 1) {
+    throw new Error("LOCAL_JOB_CONFLICT_RETRY_PREPARATION_FAILED");
+  }
+
+  const updated = await getLocalJob(db, userId, job.id);
+
+  if (!updated) {
+    throw new Error("LOCAL_JOB_CONFLICT_RETRY_PREPARATION_FAILED");
+  }
+
+  return updated;
+}
+
 export { mapRowToLocalJob, mapServerJobToLocalJob };
