@@ -176,6 +176,21 @@ export default function JobDetailsScreen() {
 
       const resolvedJob = await resolveJobConflict(id, resolution);
 
+      if (resolvedJob.deletedAt != null) {
+        Alert.alert(
+          "Conflict resolved",
+          "The server deletion has been applied. This job is no longer active.",
+          [
+            {
+              text: "OK",
+              onPress: () => router.back(),
+            },
+          ],
+        );
+
+        return;
+      }
+
       setJob(resolvedJob);
       setLatestServerJob(null);
 
@@ -185,6 +200,12 @@ export default function JobDetailsScreen() {
           : "The job now matches the latest server version.",
       );
     } catch (error) {
+      if (error instanceof Error && error.message === "JOB_DELETED_ON_SERVER") {
+        setError(
+          "The job was deleted on the server. Accept the server deletion to resolve this conflict.",
+        );
+      }
+
       if (
         error instanceof Error &&
         error.message === "JOB_CONFLICT_CHANGE_NOT_APPLICABLE"
@@ -291,6 +312,8 @@ export default function JobDetailsScreen() {
 
   const canReapplyLocalChange = Boolean(
     latestServerJob &&
+    !job.deletedAt &&
+    !latestServerJob.deletedAt &&
     latestServerJob.status !== job.status &&
     getNextJobStatus(latestServerJob.status) === job.status,
   );
@@ -376,7 +399,21 @@ export default function JobDetailsScreen() {
                 Your device: {formatStatus(job.status)}
               </Text>
 
-              {latestServerJob ? (
+              {job.deletedAt != null || latestServerJob?.deletedAt != null ? (
+                <>
+                  <Text style={styles.conflictText}>Server state: Deleted</Text>
+
+                  <Text style={styles.conflictText}>
+                    Server revision: {latestServerJob?.version ?? job.version}
+                  </Text>
+
+                  <Text style={styles.conflictHint}>
+                    This job was deleted on another device. Your local changes
+                    are preserved, but they cannot be uploaded to a deleted job.
+                    Accept the server deletion to resolve this conflict.
+                  </Text>
+                </>
+              ) : latestServerJob ? (
                 <>
                   <Text style={styles.conflictText}>
                     Latest server version:{" "}
@@ -420,7 +457,9 @@ export default function JobDetailsScreen() {
                 ]}
               >
                 <Text style={styles.conflictButtonText}>
-                  Use server version
+                  {job.deletedAt != null || latestServerJob?.deletedAt != null
+                    ? "Accept server deletion"
+                    : "Use server version"}
                 </Text>
               </Pressable>
 

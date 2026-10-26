@@ -1,5 +1,7 @@
 import {
+  acknowledgeServerDeletedJob,
   getLocalJob,
+  getLocalJobIncludingDeleted,
   prepareConflictedLocalJobForRetry,
   replaceConflictedLocalJobWithServer,
 } from "@/repositories/local-jobs.repository";
@@ -39,6 +41,38 @@ export async function getLatestServerJobForConflict(
   jobId: string,
 ): Promise<Job> {
   const userId = getCurrentUserId();
+  const db = await getDatabase();
+
+  /**
+   * A tombstone received from the server is sufficient to
+   * resolve a remote deletion. The normal GET endpoint returns
+   * 404 for deleted jobs, so do not request it again.
+   */
+  const local = await getLocalJobIncludingDeleted(db, userId, jobId);
+
+  if (local && local.syncStatus === "conflict" && local.deletedAt != null) {
+    if (
+      typeof local.version !== "number" ||
+      !Number.isInteger(local.version) ||
+      local.version < 1
+    ) {
+      throw new Error("JOB_SERVER_VERSION_REQUIRED");
+    }
+
+    return {
+      id: local.id,
+      userId: local.userId,
+      title: local.title,
+      scheduledAt: local.scheduledAt,
+      location: local.location,
+      status: local.status,
+      priority: local.priority,
+      createdAt: local.createdAt,
+      updatedAt: local.serverUpdatedAt ?? local.updatedAt,
+      version: local.version,
+      deletedAt: local.deletedAt,
+    };
+  }
 
   const response = await apiGet<JobResponse>(`/api/jobs/${jobId}`);
   const job = response.data;
@@ -55,7 +89,7 @@ export async function getLatestServerJobForConflict(
     throw new Error("JOB_SERVER_VERSION_REQUIRED");
   }
 
-  return job;
+  return job as Job;
 }
 
 /**
@@ -79,6 +113,28 @@ export async function resolveJobConflict(
   }
 
   const serverJob = await getLatestServerJobForConflict(jobId);
+
+  /**
+   * A remotely deleted job cannot accept a new status update.
+   * "Use server" means accept the tombstone and discard the
+   * conflicted queued changes.
+   */
+  if (serverJob.deletedAt != null) {
+    if (resolution !== "use_server") {
+      throw new Error("JOB_DELETED_ON_SERVER");
+    }
+
+    await db.withTransactionAsync(async () => {
+      await acknowledgeServerDeletedJob(db, userId, serverJob as ServerJob);
+
+      await deleteConflictedMutationsForEntity(db, userId, "job", jobId);
+    });
+
+    return {
+      ...serverJob,
+      syncStatus: "synced",
+    };
+  }
 
   /**
    * If the requested local status already matches the server,

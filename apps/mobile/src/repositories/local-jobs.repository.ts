@@ -226,21 +226,83 @@ export async function applyServerJobFromPull(
     throw new Error("LOCAL_JOB_ID_BELONGS_TO_ANOTHER_USER");
   }
 
-  /**
-   * No local version exists yet.
-   */
   if (!existing) {
     return upsertServerJob(db, userId, job);
   }
 
   /**
-   * Local work is pending.
-   *
-   * Keep the local user-visible data,
-   * but record that the server has moved
-   * to a newer version.
+   * A replayed, older server revision must not replace
+   * a newer local record or erase a newer tombstone.
    */
+  if (
+    typeof job.version === "number" &&
+    typeof existing.server_version === "number" &&
+    job.version < existing.server_version
+  ) {
+    return mapRowToLocalJob(existing);
+  }
+
+  /**
+   * Both sides deleted the same job.
+   *
+   * The remote deletion already satisfies the local intent.
+   * A queued delete can still be retried safely; the server
+   * delete endpoint treats an existing tombstone as a no-op.
+   */
+  if (job.deletedAt != null && existing.sync_status === "pending_delete") {
+    return acknowledgeServerDeletedJob(db, userId, job);
+  }
+
   if (existing.sync_status !== "synced") {
+    /**
+     * Remote deletion conflicts with some other local work.
+     *
+     * Keep the local business fields unchanged, save the
+     * remote revision and tombstone, and mark the job conflicted.
+     * The conflict must remain visible until a user resolves it.
+     */
+    if (job.deletedAt != null) {
+      const result = await db.runAsync(
+        `
+          UPDATE jobs
+          SET
+            server_updated_at = ?,
+            server_version = ?,
+            deleted_at = ?,
+            sync_status = 'conflict'
+          WHERE id = ?
+            AND user_id = ?
+        `,
+        job.updatedAt,
+        job.version,
+        job.deletedAt,
+        job.id,
+        userId,
+      );
+
+      if (result.changes !== 1) {
+        throw new Error("LOCAL_JOB_TOMBSTONE_CONFLICT_FAILED");
+      }
+
+      const conflictedJob = await getLocalJobIncludingDeleted(
+        db,
+        userId,
+        job.id,
+      );
+
+      if (!conflictedJob) {
+        throw new Error("LOCAL_JOB_TOMBSTONE_CONFLICT_FAILED");
+      }
+
+      return conflictedJob;
+    }
+
+    /**
+     * For a normal, non-deleted server revision:
+     * keep pending local fields and just record the latest
+     * server revision. A stale mutation will be rejected by
+     * the server's optimistic concurrency check when pushed.
+     */
     await db.runAsync(
       `
         UPDATE jobs
@@ -256,7 +318,15 @@ export async function applyServerJobFromPull(
       userId,
     );
 
-    const updated = await getLocalJob(db, userId, job.id);
+    /**
+     * pending_delete rows are hidden from normal reads.
+     * Read them through the inclusive lookup so that a pull
+     * does not fail just because the user queued a deletion.
+     */
+    const updated =
+      existing.deleted_at !== null
+        ? await getLocalJobIncludingDeleted(db, userId, job.id)
+        : await getLocalJob(db, userId, job.id);
 
     if (!updated) {
       throw new Error("LOCAL_JOB_PULL_APPLY_FAILED");
@@ -266,8 +336,8 @@ export async function applyServerJobFromPull(
   }
 
   /**
-   * No pending local work:
-   * server becomes authoritative.
+   * No unsynchronized local work remains.
+   * The server record, including its tombstone, is authoritative.
    */
   return upsertServerJob(db, userId, job);
 }
@@ -438,7 +508,7 @@ export async function listLocalJobs(
         deleted_at
       FROM jobs
       WHERE user_id = ?
-        AND deleted_at IS NULL
+        AND (deleted_at IS NULL OR sync_status = 'conflict')
       ORDER BY scheduled_at ASC
     `,
     userId,
@@ -472,7 +542,7 @@ export async function getLocalJob(
       FROM jobs
       WHERE id = ?
         AND user_id = ?
-        AND deleted_at IS NULL
+        AND (deleted_at IS NULL OR sync_status = 'conflict')
       LIMIT 1
     `,
     jobId,

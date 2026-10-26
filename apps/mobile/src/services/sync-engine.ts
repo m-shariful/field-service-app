@@ -344,7 +344,8 @@ export async function syncPendingMutations(): Promise<SyncResult> {
       if (
         error instanceof ApiError &&
         error.status === 409 &&
-        error.code === "JOB_VERSION_CONFLICT"
+        (error.code === "JOB_VERSION_CONFLICT" ||
+          error.code === "JOB_ALREADY_DELETED")
       ) {
         const errorMessage = getErrorMessage(error);
 

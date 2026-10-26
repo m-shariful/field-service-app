@@ -1,6 +1,7 @@
 import { apiGet, apiPatch, apiPost } from "@/api/client";
 import {
   getLocalJob,
+  getLocalJobIncludingDeleted,
   insertLocalJob,
   listLocalJobs,
   markLocalJobConflict,
@@ -43,6 +44,8 @@ vi.mock("@/repositories/local-jobs.repository", () => ({
   insertLocalJob: vi.fn(),
   updateLocalJobStatus: vi.fn(),
   markLocalJobConflict: vi.fn(),
+  acknowledgeServerDeletedJob: vi.fn(),
+  getLocalJobIncludingDeleted: vi.fn(),
 }));
 
 vi.mock("@/repositories/sync-queue.repository", () => ({
@@ -226,6 +229,8 @@ describe("jobs repository - offline aware reads", () => {
     const notFoundError = new ApiError("Job not found", 404, "JOB_NOT_FOUND");
 
     vi.mocked(apiGet).mockRejectedValue(notFoundError);
+    vi.mocked(getLocalJobIncludingDeleted).mockResolvedValue(null);
+    vi.mocked(getLocalJob).mockResolvedValue(null);
 
     await expect(getJobById("job-missing")).rejects.toBe(notFoundError);
 
@@ -363,6 +368,26 @@ describe("jobs repository - offline aware reads", () => {
     ).rejects.toThrow("JOB_SERVER_VERSION_REQUIRED");
 
     expect(apiPatch).not.toHaveBeenCalled();
+  });
+
+  it("returns a cached tombstone conflict after the server returns 404", async () => {
+    const notFoundError = new ApiError("Job not found", 404, "JOB_NOT_FOUND");
+
+    const deletedConflict = {
+      ...serverJobs[0],
+      syncStatus: "conflict" as const,
+      deletedAt: "2026-10-26T12:00:00.000Z",
+    };
+
+    vi.mocked(apiGet).mockRejectedValue(notFoundError);
+    vi.mocked(getLocalJobIncludingDeleted).mockResolvedValue(
+      deletedConflict as never,
+    );
+
+    const result = await getJobById("job-001");
+
+    expect(result).toEqual(deletedConflict);
+    expect(getLocalJob).not.toHaveBeenCalled();
   });
 
   it("updates a job locally and queues the mutation while offline", async () => {

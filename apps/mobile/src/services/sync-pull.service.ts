@@ -7,6 +7,7 @@ import {
   applyServerJobFromPull,
   type ServerJob,
 } from "@/repositories/local-jobs.repository";
+import { markEntityMutationsConflict } from "@/repositories/sync-queue.repository";
 
 import {
   getSyncState,
@@ -112,7 +113,27 @@ export async function pullJobChanges(): Promise<PullSyncResult> {
      */
     await db.withTransactionAsync(async () => {
       for (const job of page.items) {
-        await applyServerJobFromPull(db, userId, job as ServerJob);
+        const appliedJob = await applyServerJobFromPull(
+          db,
+          userId,
+          job as ServerJob,
+        );
+
+        /**
+         * The server deleted a job that still has local changes.
+         *
+         * Mark its active outbox entries as conflicted in the same
+         * transaction as the tombstone and sync cursor updates.
+         */
+        if (job.deletedAt != null && appliedJob.syncStatus === "conflict") {
+          await markEntityMutationsConflict(
+            db,
+            userId,
+            "job",
+            job.id,
+            "SERVER_JOB_DELETED",
+          );
+        }
 
         jobsApplied += 1;
       }

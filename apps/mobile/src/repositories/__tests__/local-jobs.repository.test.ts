@@ -363,4 +363,52 @@ describe("local jobs repository", () => {
     expect(sql).toContain("sync_status = 'pending_delete'");
     expect(sql).not.toContain("DELETE FROM jobs");
   });
+
+  it("preserves local edits and exposes a remote deletion as a conflict", async () => {
+    const db = createFakeDatabase();
+
+    const deletedAt = "2026-10-26T12:00:00.000Z";
+
+    const incomingTombstone = {
+      ...serverJob,
+      updatedAt: deletedAt,
+      version: 2,
+      deletedAt,
+    };
+
+    const getFirstAsyncMock = db.getFirstAsync as ReturnType<typeof vi.fn>;
+
+    getFirstAsyncMock
+      .mockResolvedValueOnce(
+        createPendingJobRow({
+          status: "in_progress",
+          sync_status: "pending_update",
+          server_version: 1,
+          deleted_at: null,
+        }),
+      )
+      .mockResolvedValueOnce(
+        createPendingJobRow({
+          status: "in_progress",
+          sync_status: "conflict",
+          server_updated_at: deletedAt,
+          server_version: 2,
+          deleted_at: deletedAt,
+        }),
+      );
+
+    const result = await applyServerJobFromPull(db, userId, incomingTombstone);
+
+    expect(result.status).toBe("in_progress");
+    expect(result.syncStatus).toBe("conflict");
+    expect(result.deletedAt).toBe(deletedAt);
+    expect(result.version).toBe(2);
+
+    const runAsyncMock = db.runAsync as ReturnType<typeof vi.fn>;
+    const [sql] = runAsyncMock.mock.calls[0];
+
+    expect(sql).toContain("server_version = ?");
+    expect(sql).toContain("deleted_at = ?");
+    expect(sql).toContain("sync_status = 'conflict'");
+  });
 });

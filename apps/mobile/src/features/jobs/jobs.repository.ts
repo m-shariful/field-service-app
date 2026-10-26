@@ -2,6 +2,7 @@ import { apiDelete, apiGet, apiPatch, apiPost } from "@/api/client";
 import {
   acknowledgeServerDeletedJob,
   getLocalJob,
+  getLocalJobIncludingDeleted,
   insertLocalJob,
   listLocalJobs,
   markLocalJobConflict,
@@ -323,6 +324,28 @@ export async function getJobById(id: string): Promise<Job> {
 
     return localJob ?? response.data;
   } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      try {
+        const db = await getDatabase();
+
+        const cachedJob = await getLocalJobIncludingDeleted(db, userId, id);
+
+        if (
+          cachedJob?.syncStatus === "conflict" &&
+          cachedJob.deletedAt != null
+        ) {
+          return cachedJob as Job;
+        }
+      } catch (cacheError) {
+        console.warn(
+          "Failed to check for a locally cached deletion conflict:",
+          cacheError,
+        );
+      }
+
+      throw error;
+    }
+
     if (!shouldFallbackToLocal(error)) {
       throw error;
     }

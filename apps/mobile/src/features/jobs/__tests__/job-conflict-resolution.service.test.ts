@@ -1,5 +1,6 @@
 import {
   getLocalJob,
+  getLocalJobIncludingDeleted,
   prepareConflictedLocalJobForRetry,
   replaceConflictedLocalJobWithServer,
 } from "@/repositories/local-jobs.repository";
@@ -27,6 +28,8 @@ vi.mock("@/db/database", () => ({
 
 vi.mock("@/repositories/local-jobs.repository", () => ({
   getLocalJob: vi.fn(),
+  getLocalJobIncludingDeleted: vi.fn(),
+  acknowledgeServerDeletedJob: vi.fn(),
   prepareConflictedLocalJobForRetry: vi.fn(),
   replaceConflictedLocalJobWithServer: vi.fn(),
 }));
@@ -99,6 +102,7 @@ describe("job conflict resolution", () => {
     vi.mocked(getDatabase).mockResolvedValue(createDatabase());
 
     vi.mocked(getLocalJob).mockResolvedValue(localConflict);
+    vi.mocked(getLocalJobIncludingDeleted).mockResolvedValue(localConflict);
 
     vi.mocked(apiGet).mockResolvedValue({
       data: serverJob,
@@ -162,10 +166,14 @@ describe("job conflict resolution", () => {
   });
 
   it("does not reapply a backward status transition", async () => {
-    vi.mocked(getLocalJob).mockResolvedValue({
+    const backwardConflict = {
       ...localConflict,
-      status: "in_progress",
-    });
+      status: "in_progress" as const,
+      deletedAt: null,
+    } as LocalJob;
+
+    vi.mocked(getLocalJob).mockResolvedValue(backwardConflict);
+    vi.mocked(getLocalJobIncludingDeleted).mockResolvedValue(backwardConflict);
 
     vi.mocked(apiGet).mockResolvedValue({
       data: {
