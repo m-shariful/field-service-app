@@ -1,8 +1,11 @@
-import { apiPatch, apiPost } from "@/api/client";
+import { apiDelete, apiPatch, apiPost } from "@/api/client";
 import {
+  acknowledgeServerDeletedJob,
   acknowledgeServerJob,
   getLocalJob,
   markLocalJobConflict,
+  restoreConflictedPendingDelete,
+  type ServerJob,
 } from "@/repositories/local-jobs.repository";
 import {
   hasPendingMutationsForEntity,
@@ -56,6 +59,34 @@ function getErrorMessage(error: unknown): string {
   }
 
   return String(error);
+}
+
+async function syncDeleteMutation(
+  jobId: string,
+  mutationId: string,
+  payload: Record<string, unknown>,
+): Promise<Job> {
+  const baseVersion = payload.baseVersion;
+
+  if (
+    typeof baseVersion !== "number" ||
+    !Number.isInteger(baseVersion) ||
+    baseVersion < 1
+  ) {
+    throw new Error("JOB_DELETE_BASE_VERSION_MISSING_OR_INVALID");
+  }
+
+  const response = await apiDelete<JobResponse>(
+    `/api/jobs/${jobId}`,
+    { baseVersion },
+    {
+      headers: {
+        "Idempotency-Key": mutationId,
+      },
+    },
+  );
+
+  return response.data;
 }
 
 async function syncCreateMutation(
@@ -170,7 +201,11 @@ async function executeMutation(
     }
 
     case "delete":
-      throw new Error("JOB_DELETE_SYNC_NOT_IMPLEMENTED");
+      return syncDeleteMutation(
+        mutation.entityId,
+        mutation.mutationId,
+        mutation.payload,
+      );
   }
 }
 
@@ -256,6 +291,18 @@ export async function syncPendingMutations(): Promise<SyncResult> {
     try {
       const serverJob = await executeMutation(db, userId, mutation);
 
+      if (mutation.operation === "delete") {
+        // Acknowledge the tombstone before marking the queue entry
+        // synced. If local persistence fails, the request can retry
+        // with the same idempotency key.
+        await acknowledgeServerDeletedJob(db, userId, serverJob as ServerJob);
+
+        await markMutationSynced(db, userId, mutation.id);
+
+        result.succeeded += 1;
+        continue;
+      }
+
       await markMutationSynced(db, userId, mutation.id);
 
       const hasPendingMutations = await hasPendingMutationsForEntity(
@@ -315,7 +362,11 @@ export async function syncPendingMutations(): Promise<SyncResult> {
         conflictedEntities.add(`${mutation.entityType}:${mutation.entityId}`);
 
         if (mutation.entityType === "job") {
-          await markLocalJobConflict(db, userId, mutation.entityId);
+          if (mutation.operation === "delete") {
+            await restoreConflictedPendingDelete(db, userId, mutation.entityId);
+          } else {
+            await markLocalJobConflict(db, userId, mutation.entityId);
+          }
         }
 
         result.conflicts += 1;

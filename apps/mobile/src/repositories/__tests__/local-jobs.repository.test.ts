@@ -6,6 +6,7 @@ import {
   getLocalJob,
   listLocalJobs,
   mapServerJobToLocalJob,
+  markLocalJobPendingDelete,
   replaceServerSnapshot,
   upsertServerJob,
 } from "../local-jobs.repository";
@@ -323,5 +324,43 @@ describe("local jobs repository", () => {
 
     // Save the revision returned by the server.
     expect(result.version).toBe(2);
+  });
+
+  it("marks a synced job for deletion without physically removing it", async () => {
+    const db = createFakeDatabase();
+
+    const getFirstAsyncMock = db.getFirstAsync as unknown as ReturnType<
+      typeof vi.fn
+    >;
+
+    getFirstAsyncMock
+      .mockResolvedValueOnce(
+        createPendingJobRow({
+          sync_status: "synced",
+          server_version: 1,
+          deleted_at: null,
+        }),
+      )
+      .mockResolvedValueOnce(
+        createPendingJobRow({
+          sync_status: "pending_delete",
+          server_version: 1,
+          deleted_at: "2026-10-26T10:00:00.000Z",
+        }),
+      );
+
+    const result = await markLocalJobPendingDelete(db, userId, "job-001");
+
+    expect(result.syncStatus).toBe("pending_delete");
+    expect(result.deletedAt).toEqual(expect.any(String));
+    expect(result.version).toBe(1);
+
+    const runAsyncMock = db.runAsync as unknown as ReturnType<typeof vi.fn>;
+
+    const [sql] = runAsyncMock.mock.calls[0];
+
+    expect(sql).toContain("deleted_at = ?");
+    expect(sql).toContain("sync_status = 'pending_delete'");
+    expect(sql).not.toContain("DELETE FROM jobs");
   });
 });

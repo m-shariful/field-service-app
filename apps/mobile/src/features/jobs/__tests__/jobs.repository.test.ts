@@ -28,6 +28,7 @@ vi.mock("@/api/client", () => ({
   apiGet: vi.fn(),
   apiPatch: vi.fn(),
   apiPost: vi.fn(),
+  apiDelete: vi.fn(),
 }));
 
 vi.mock("@/db/database", () => ({

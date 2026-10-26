@@ -2,9 +2,13 @@ import {
   getJobActionLabel,
   getNextJobStatus,
 } from "@/features/jobs/job-status";
-import { getJobById, updateJobStatus } from "@/features/jobs/jobs.repository";
+import {
+  deleteJob,
+  getJobById,
+  updateJobStatus,
+} from "@/features/jobs/jobs.repository";
 import type { Job, JobStatus } from "@/features/jobs/types";
-import { Stack, useLocalSearchParams } from "expo-router";
+import { router, Stack, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -39,6 +43,8 @@ export default function JobDetailsScreen() {
   const [resolutionMessage, setResolutionMessage] = useState<string | null>(
     null,
   );
+
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const fetchConflictServerSnapshot = useCallback(
     async (candidate: Job): Promise<Job | null> => {
@@ -198,6 +204,55 @@ export default function JobDetailsScreen() {
     }
   }
 
+  async function handleDeleteJob() {
+    if (!job) {
+      return;
+    }
+
+    try {
+      setIsDeleting(true);
+      setError(null);
+
+      const result = await deleteJob(id, job.version);
+      const queued = result.syncStatus === "pending_delete";
+
+      Alert.alert(
+        "Job deleted",
+        queued
+          ? "The job is removed from this device and will sync when you are online."
+          : "The job deletion has been saved on the server.",
+        [
+          {
+            text: "OK",
+            onPress: () => router.back(),
+          },
+        ],
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === "JOB_HAS_PENDING_MUTATIONS"
+      ) {
+        setError(
+          "This job has pending changes. Sync or resolve those changes before deleting it.",
+        );
+      } else if (
+        error instanceof ApiError &&
+        error.code === "JOB_VERSION_CONFLICT"
+      ) {
+        setError(
+          "The job changed on the server. Refresh its details before deleting it.",
+        );
+      } else {
+        setError(
+          error instanceof Error ? error.message : "Failed to delete this job.",
+        );
+      }
+    } finally {
+      setIsDeleting(false);
+    }
+  }
+
   if (isLoading) {
     return (
       <>
@@ -266,6 +321,39 @@ export default function JobDetailsScreen() {
             </View>
 
             <PriorityBadge priority={job.priority} />
+
+            {job.syncStatus === "synced" && (
+              <Pressable
+                disabled={isDeleting || isUpdating}
+                onPress={() => {
+                  Alert.alert(
+                    "Delete this job?",
+                    "This removes it from your active job list. If you are offline, the deletion will sync when the connection returns.",
+                    [
+                      {
+                        text: "Cancel",
+                        style: "cancel",
+                      },
+                      {
+                        text: "Delete job",
+                        style: "destructive",
+                        onPress: () => void handleDeleteJob(),
+                      },
+                    ],
+                  );
+                }}
+                style={[
+                  styles.deleteButton,
+                  (isDeleting || isUpdating) && styles.actionDisabled,
+                ]}
+              >
+                {isDeleting ? (
+                  <ActivityIndicator color="#B91C1C" />
+                ) : (
+                  <Text style={styles.deleteButtonText}>Delete job</Text>
+                )}
+              </Pressable>
+            )}
           </View>
 
           <View style={styles.statusCard}>
@@ -830,5 +918,22 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     color: "#166534",
+  },
+
+  deleteButton: {
+    minHeight: 46,
+    marginTop: 20,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#FCA5A5",
+    backgroundColor: "#FEF2F2",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  deleteButtonText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#B91C1C",
   },
 });

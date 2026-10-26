@@ -23,6 +23,7 @@ export interface ServerJob {
   updatedAt: string;
 
   version: number | null;
+  deletedAt?: string | null;
 }
 
 function mapRowToLocalJob(row: LocalJobRow): LocalJob {
@@ -85,7 +86,7 @@ function mapServerJobToLocalJob(
 
     syncStatus: "synced",
 
-    deletedAt: null,
+    deletedAt: job.deletedAt ?? null,
 
     version: job.version,
   };
@@ -403,6 +404,7 @@ export async function replaceServerSnapshot(
         DELETE FROM jobs
         WHERE user_id = ?
           AND sync_status = 'synced'
+          AND deleted_at IS NULL
       `,
       userId,
     );
@@ -478,6 +480,174 @@ export async function getLocalJob(
   );
 
   return row ? mapRowToLocalJob(row) : null;
+}
+
+/**
+ * Read a job even when it has a local tombstone.
+ * Normal screens should continue using getLocalJob().
+ */
+export async function getLocalJobIncludingDeleted(
+  db: SQLiteDatabase,
+  userId: string,
+  jobId: string,
+): Promise<LocalJob | null> {
+  const row = await getExistingJobRow(db, jobId);
+
+  if (!row) {
+    return null;
+  }
+
+  if (row.user_id !== userId) {
+    throw new Error("LOCAL_JOB_ID_BELONGS_TO_ANOTHER_USER");
+  }
+
+  return mapRowToLocalJob(row);
+}
+
+/**
+ * Hide a server-backed job immediately and mark it for upload.
+ *
+ * We require a clean local job. Pending updates must be synced
+ * first so we don't silently lose their ordering or version anchor.
+ */
+export async function markLocalJobPendingDelete(
+  db: SQLiteDatabase,
+  userId: string,
+  jobId: string,
+): Promise<LocalJob> {
+  const existing = await getLocalJob(db, userId, jobId);
+
+  if (!existing) {
+    throw new Error("LOCAL_JOB_NOT_FOUND");
+  }
+
+  if (existing.syncStatus !== "synced") {
+    throw new Error("JOB_HAS_PENDING_MUTATIONS");
+  }
+
+  if (existing.version === null) {
+    throw new Error("JOB_SERVER_VERSION_REQUIRED");
+  }
+
+  const deletedAt = new Date().toISOString();
+
+  const result = await db.runAsync(
+    `
+      UPDATE jobs
+      SET
+        deleted_at = ?,
+        local_updated_at = ?,
+        sync_status = 'pending_delete'
+      WHERE id = ?
+        AND user_id = ?
+        AND deleted_at IS NULL
+        AND sync_status = 'synced'
+    `,
+    deletedAt,
+    deletedAt,
+    jobId,
+    userId,
+  );
+
+  if (result.changes !== 1) {
+    throw new Error("LOCAL_JOB_DELETE_FAILED");
+  }
+
+  const deletedJob = await getLocalJobIncludingDeleted(db, userId, jobId);
+
+  if (!deletedJob) {
+    throw new Error("LOCAL_JOB_DELETE_FAILED");
+  }
+
+  return deletedJob;
+}
+
+/**
+ * Persist a successful server DELETE response.
+ * Acknowledgement must preserve the tombstone locally.
+ */
+export async function acknowledgeServerDeletedJob(
+  db: SQLiteDatabase,
+  userId: string,
+  job: ServerJob,
+): Promise<LocalJob> {
+  if (job.userId !== userId) {
+    throw new Error("Cannot persist a job belonging to another user");
+  }
+
+  if (!job.deletedAt) {
+    throw new Error("SERVER_DELETE_RESPONSE_MISSING_TOMBSTONE");
+  }
+
+  const existing = await getExistingJobRow(db, job.id);
+
+  if (!existing) {
+    return upsertServerJob(db, userId, job);
+  }
+
+  if (existing.user_id !== userId) {
+    throw new Error("LOCAL_JOB_ID_BELONGS_TO_ANOTHER_USER");
+  }
+
+  const result = await db.runAsync(
+    `
+      UPDATE jobs
+      SET
+        updated_at = ?,
+        server_updated_at = ?,
+        server_version = ?,
+        deleted_at = ?,
+        sync_status = 'synced'
+      WHERE id = ?
+        AND user_id = ?
+    `,
+    job.updatedAt,
+    job.updatedAt,
+    job.version,
+    job.deletedAt,
+    job.id,
+    userId,
+  );
+
+  if (result.changes !== 1) {
+    throw new Error("LOCAL_JOB_DELETE_ACKNOWLEDGEMENT_FAILED");
+  }
+
+  const acknowledged = await getLocalJobIncludingDeleted(db, userId, job.id);
+
+  if (!acknowledged) {
+    throw new Error("LOCAL_JOB_DELETE_ACKNOWLEDGEMENT_FAILED");
+  }
+
+  return acknowledged;
+}
+
+/**
+ * If the server rejects a queued delete because its baseVersion
+ * is stale, restore the job's visibility so the user can resolve it.
+ */
+export async function restoreConflictedPendingDelete(
+  db: SQLiteDatabase,
+  userId: string,
+  jobId: string,
+): Promise<void> {
+  const result = await db.runAsync(
+    `
+      UPDATE jobs
+      SET
+        deleted_at = NULL,
+        sync_status = 'conflict'
+      WHERE id = ?
+        AND user_id = ?
+        AND sync_status = 'pending_delete'
+    `,
+    jobId,
+    userId,
+  );
+
+  if (result.changes !== 1) {
+    throw new Error("LOCAL_JOB_DELETE_CONFLICT_RESTORE_FAILED");
+  }
 }
 
 export async function clearUserJobs(

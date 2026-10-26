@@ -1,5 +1,6 @@
-import { apiPatch, apiPost } from "@/api/client";
+import { apiDelete, apiPatch, apiPost } from "@/api/client";
 import {
+  acknowledgeServerDeletedJob,
   acknowledgeServerJob,
   getLocalJob,
 } from "@/repositories/local-jobs.repository";
@@ -22,6 +23,7 @@ import { syncPendingMutations } from "../sync-engine";
 vi.mock("@/api/client", () => ({
   apiPatch: vi.fn(),
   apiPost: vi.fn(),
+  apiDelete: vi.fn(),
 }));
 
 vi.mock("@/db/database", () => ({
@@ -32,6 +34,7 @@ vi.mock("@/repositories/local-jobs.repository", () => ({
   acknowledgeServerJob: vi.fn(),
   getLocalJob: vi.fn(),
   markLocalJobConflict: vi.fn(),
+  acknowledgeServerDeletedJob: vi.fn(),
 }));
 
 vi.mock("@/repositories/sync-queue.repository", () => ({
@@ -254,6 +257,49 @@ describe("sync engine - versioned queued updates", () => {
       "job",
       firstMutation.entityId,
       "409:JOB_VERSION_CONFLICT:This job was changed on the server.",
+    );
+  });
+
+  it("sends a queued delete with its version and acknowledges the tombstone", async () => {
+    const mutation = makeMutation({
+      id: "queue-delete-001",
+      operation: "delete",
+      payload: {
+        baseVersion: 1,
+      },
+      mutationId: "mutation-delete-001",
+    });
+
+    const deletedJob = {
+      ...createdJob,
+      version: 2,
+      deletedAt: "2026-10-26T10:00:00.000Z",
+    };
+
+    vi.mocked(listDueMutations).mockResolvedValue([mutation]);
+    vi.mocked(apiDelete).mockResolvedValue({
+      data: deletedJob,
+    } as never);
+
+    const result = await syncPendingMutations();
+
+    expect(result.processed).toBe(1);
+    expect(result.succeeded).toBe(1);
+
+    expect(apiDelete).toHaveBeenCalledWith(
+      `/api/jobs/${createdJob.id}`,
+      { baseVersion: 1 },
+      {
+        headers: {
+          "Idempotency-Key": "mutation-delete-001",
+        },
+      },
+    );
+
+    expect(acknowledgeServerDeletedJob).toHaveBeenCalledWith(
+      expect.anything(),
+      userId,
+      deletedJob,
     );
   });
 });

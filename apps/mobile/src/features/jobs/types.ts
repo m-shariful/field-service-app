@@ -20,6 +20,6 @@ export interface Job {
    * has not yet received a server revision.
    */
   version: number | null;
-
   syncStatus?: SyncStatus;
+  deletedAt?: string | null;
 }

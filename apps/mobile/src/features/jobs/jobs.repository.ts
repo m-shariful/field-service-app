@@ -1,15 +1,18 @@
-import { apiGet, apiPatch, apiPost } from "@/api/client";
+import { apiDelete, apiGet, apiPatch, apiPost } from "@/api/client";
 import {
+  acknowledgeServerDeletedJob,
   getLocalJob,
   insertLocalJob,
   listLocalJobs,
   markLocalJobConflict,
+  markLocalJobPendingDelete,
   replaceServerSnapshot,
   updateLocalJobStatus,
   upsertServerJob,
 } from "@/repositories/local-jobs.repository";
 import {
   enqueueMutation,
+  hasPendingMutationsForEntity,
   markEntityMutationsConflict,
 } from "@/repositories/sync-queue.repository";
 import type { Job, JobPriority } from "./types";
@@ -395,6 +398,142 @@ export async function updateJobStatus(
     }
 
     return updateLocalJobStatusOffline(userId, id, status, baseVersion);
+  }
+}
+
+function generateMutationId(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return `mutation-${globalThis.crypto.randomUUID()}`;
+  }
+
+  return `mutation-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+async function queueLocalDelete(
+  db: Awaited<ReturnType<typeof getDatabase>>,
+  userId: string,
+  id: string,
+  baseVersion: number,
+  mutationId: string,
+): Promise<Job> {
+  let pendingDelete: LocalJob | null = null;
+
+  await db.withTransactionAsync(async () => {
+    const existingJob = await getLocalJob(db, userId, id);
+
+    if (!existingJob) {
+      throw new Error("LOCAL_JOB_NOT_FOUND");
+    }
+
+    if (existingJob.syncStatus !== "synced") {
+      throw new Error("JOB_HAS_PENDING_MUTATIONS");
+    }
+
+    const hasPendingMutations = await hasPendingMutationsForEntity(
+      db,
+      userId,
+      "job",
+      id,
+    );
+
+    if (hasPendingMutations) {
+      throw new Error("JOB_HAS_PENDING_MUTATIONS");
+    }
+
+    // Both writes succeed together, or neither does.
+    pendingDelete = await markLocalJobPendingDelete(db, userId, id);
+
+    await enqueueMutation(db, {
+      userId,
+      entityType: "job",
+      entityId: id,
+      operation: "delete",
+      payload: {
+        baseVersion,
+      },
+      mutationId,
+    });
+  });
+
+  if (!pendingDelete) {
+    throw new Error("LOCAL_JOB_DELETE_FAILED");
+  }
+
+  return pendingDelete as Job;
+}
+
+export async function deleteJob(
+  id: string,
+  baseVersion: number | null,
+): Promise<Job> {
+  const userId = getCurrentUserId();
+
+  if (
+    typeof baseVersion !== "number" ||
+    !Number.isInteger(baseVersion) ||
+    baseVersion < 1
+  ) {
+    throw new Error("JOB_SERVER_VERSION_REQUIRED");
+  }
+
+  const db = await getDatabase();
+  const existingJob = await getLocalJob(db, userId, id);
+
+  if (!existingJob) {
+    throw new Error("LOCAL_JOB_NOT_FOUND");
+  }
+
+  if (existingJob.syncStatus !== "synced") {
+    throw new Error("JOB_HAS_PENDING_MUTATIONS");
+  }
+
+  if (existingJob.version === null) {
+    throw new Error("JOB_SERVER_VERSION_REQUIRED");
+  }
+
+  if (await hasPendingMutationsForEntity(db, userId, "job", id)) {
+    throw new Error("JOB_HAS_PENDING_MUTATIONS");
+  }
+
+  // Reuse this same ID if the server request fails at the network layer.
+  const mutationId = generateMutationId();
+
+  if (isOfflineSession()) {
+    return queueLocalDelete(db, userId, id, baseVersion, mutationId);
+  }
+
+  try {
+    const response = await apiDelete<JobResponse>(
+      `/api/jobs/${id}`,
+      { baseVersion },
+      {
+        headers: {
+          "Idempotency-Key": mutationId,
+        },
+      },
+    );
+
+    await acknowledgeServerDeletedJob(db, userId, response.data);
+
+    return {
+      ...response.data,
+      syncStatus: "synced",
+    };
+  } catch (error) {
+    if (error instanceof ApiError) {
+      if (error.status === 409 && error.code === "JOB_VERSION_CONFLICT") {
+        // Keep the record visible so the user can refresh
+        // and decide whether to delete the newer server version.
+        await markLocalJobConflict(db, userId, id);
+      }
+
+      throw error;
+    }
+
+    // Network failure: hide locally and queue the delete.
+    // Keep the same idempotency key in case the server processed
+    // the request but the response never reached this device.
+    return queueLocalDelete(db, userId, id, baseVersion, mutationId);
   }
 }
 

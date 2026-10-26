@@ -413,6 +413,18 @@ export async function apiPatch<T>(
   });
 }
 
+export async function apiDelete<T>(
+  path: string,
+  body: unknown,
+  options: ApiRequestOptions = {},
+): Promise<T> {
+  return request<T>(path, {
+    method: "DELETE",
+    body: JSON.stringify(body),
+    headers: options.headers,
+  });
+}
+
 export async function apiPostPublic<T>(
   path: string,
   body: unknown,
