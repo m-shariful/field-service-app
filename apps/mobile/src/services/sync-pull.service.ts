@@ -96,6 +96,19 @@ export async function pullJobChanges(): Promise<PullSyncResult> {
 
     const page = response.data;
 
+    console.log("[Sync Pull]", {
+      requestedCursor: cursor,
+      receivedCount: page.items.length,
+      receivedJobs: page.items.map((job) => ({
+        id: job.id,
+        status: job.status,
+        updatedAt: job.updatedAt,
+        version: job.version,
+      })),
+      nextCursor: page.nextCursor,
+      hasMore: page.hasMore,
+    });
+
     /**
      * IMPORTANT:
      *

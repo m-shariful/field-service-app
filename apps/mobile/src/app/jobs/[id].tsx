@@ -204,9 +204,7 @@ export default function JobDetailsScreen() {
         setError(
           "The job was deleted on the server. Accept the server deletion to resolve this conflict.",
         );
-      }
-
-      if (
+      } else if (
         error instanceof Error &&
         error.message === "JOB_CONFLICT_CHANGE_NOT_APPLICABLE"
       ) {

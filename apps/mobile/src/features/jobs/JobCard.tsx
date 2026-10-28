@@ -1,8 +1,8 @@
-import type { Job, JobPriority, JobStatus } from "./types";
 import { Pressable, StyleSheet, Text, View } from "react-native";
+import type { Job, JobPriority, JobStatus } from "./types";
 
-import { formatJobDate } from "./formatters";
 import { router } from "expo-router";
+import { formatJobDate } from "./formatters";
 
 interface JobCardProps {
   job: Job;
@@ -56,11 +56,47 @@ export function JobCard({ job }: JobCardProps) {
       </View>
 
       <View style={styles.footer}>
-        <StatusBadge status={job.status} />
+        <View style={styles.footerBadges}>
+          <StatusBadge status={job.status} />
+          <SyncBadge syncStatus={job.syncStatus} />
+        </View>
 
         <Text style={styles.viewText}>View details →</Text>
       </View>
     </Pressable>
+  );
+}
+
+function SyncBadge({ syncStatus }: { syncStatus: Job["syncStatus"] }) {
+  if (!syncStatus || syncStatus === "synced") {
+    return null;
+  }
+
+  const label =
+    syncStatus === "pending_create"
+      ? "Not synced"
+      : syncStatus === "pending_update"
+        ? "Pending sync"
+        : syncStatus === "pending_delete"
+          ? "Deleting"
+          : "Needs review";
+
+  return (
+    <View
+      style={[
+        styles.syncBadge,
+        syncStatus === "conflict" && styles.syncBadgeConflict,
+      ]}
+    >
+      <Text
+        style={[
+          styles.syncBadgeText,
+          syncStatus === "conflict" && styles.syncBadgeConflictText,
+        ]}
+      >
+        {label}
+      </Text>
+    </View>
   );
 }
 
@@ -300,5 +336,33 @@ const styles = StyleSheet.create({
 
   statusText_completed: {
     color: "#16A34A",
+  },
+
+  footerBadges: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+
+  syncBadge: {
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "#F1F5F9",
+  },
+
+  syncBadgeConflict: {
+    backgroundColor: "#FEF2F2",
+  },
+
+  syncBadgeText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#475569",
+  },
+
+  syncBadgeConflictText: {
+    color: "#B91C1C",
   },
 });

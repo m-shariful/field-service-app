@@ -1,4 +1,5 @@
 import type { Job, JobStatus } from "@/features/jobs/types";
+import { refreshSyncQueueSummary, syncNow } from "@/services/sync.service";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
 import {
@@ -13,6 +14,7 @@ import {
 import { JobCard } from "@/features/jobs/JobCard";
 import { JobCardSkeleton } from "@/features/jobs/JobCardSkeleton";
 import { getJobs } from "@/features/jobs/jobs.repository";
+import { SyncStatusCard } from "@/features/sync/SyncStatusCard";
 import { useAuthStore } from "@/stores/auth.store";
 import { colors } from "@/theme/colors";
 import { spacing } from "@/theme/spacing";
@@ -51,10 +53,29 @@ export default function JobsScreen() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const reloadJobsFromLocal = useCallback(async () => {
+    try {
+      const data = await getJobs();
+      setJobs(data);
+      setError(null);
+    } catch {
+      setError("Failed to refresh jobs. Please try again later.");
+    } finally {
+      void refreshSyncQueueSummary();
+    }
+  }, []);
+
   const fetchJobs = useCallback(async (refresh = false) => {
     try {
       if (refresh) {
         setIsRefreshing(true);
+
+        try {
+          await syncNow();
+        } catch (syncError) {
+          // Keep fetching the job list even if sync cannot finish.
+          console.warn("Pull-to-refresh sync failed:", syncError);
+        }
       } else {
         setIsLoading(true);
       }
@@ -66,6 +87,8 @@ export default function JobsScreen() {
     } catch {
       setError("Failed to fetch jobs. Please try again later.");
     } finally {
+      void refreshSyncQueueSummary();
+
       setIsLoading(false);
       setIsRefreshing(false);
     }
@@ -73,7 +96,35 @@ export default function JobsScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      fetchJobs();
+      let cancelled = false;
+
+      const loadJobsAfterSync = async () => {
+        try {
+          await syncNow();
+        } catch (syncError) {
+          console.warn("Jobs screen focus sync failed:", syncError);
+        }
+
+        if (!cancelled) {
+          await fetchJobs();
+        }
+      };
+
+      console.log("[Sync Diagnostics]", {
+        timestamp: new Date().toISOString(),
+        trigger: "jobs-screen-focus",
+      });
+
+      void loadJobsAfterSync();
+
+      return () => {
+        cancelled = true;
+
+        console.log("[Sync Diagnostics]", {
+          timestamp: new Date().toISOString(),
+          trigger: "jobs-screen-blur",
+        });
+      };
     }, [fetchJobs]),
   );
 
@@ -176,6 +227,8 @@ export default function JobsScreen() {
             >
               <Text style={styles.createJobButtonText}>+ Create Job</Text>
             </Pressable>
+
+            <SyncStatusCard onSyncFinished={reloadJobsFromLocal} />
 
             <View style={styles.summaryRow}>
               <SummaryCard

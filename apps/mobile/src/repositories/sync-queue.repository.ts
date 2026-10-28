@@ -528,4 +528,49 @@ export async function deleteConflictedMutationsForEntity(
   );
 }
 
+export interface SyncQueueSummary {
+  queued: number;
+  conflicts: number;
+  failed: number;
+}
+
+export async function getSyncQueueSummary(
+  db: SQLiteDatabase,
+  userId: string,
+): Promise<SyncQueueSummary> {
+  const row = await db.getFirstAsync<{
+    queued: number | null;
+    conflicts: number | null;
+    failed: number | null;
+  }>(
+    `
+      SELECT
+        COUNT(
+          CASE
+            WHEN status IN ('pending', 'retry', 'syncing')
+            THEN 1
+          END
+        ) AS queued,
+
+        COUNT(
+          CASE WHEN status = 'conflict' THEN 1 END
+        ) AS conflicts,
+
+        COUNT(
+          CASE WHEN status = 'failed' THEN 1 END
+        ) AS failed
+
+      FROM sync_queue
+      WHERE user_id = ?
+    `,
+    userId,
+  );
+
+  return {
+    queued: Number(row?.queued ?? 0),
+    conflicts: Number(row?.conflicts ?? 0),
+    failed: Number(row?.failed ?? 0),
+  };
+}
+
 export { mapRowToSyncQueueItem };
