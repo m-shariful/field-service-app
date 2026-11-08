@@ -94,7 +94,17 @@ async function runFullSync(): Promise<FullSyncResult> {
 
     await refreshSyncQueueSummary();
 
-    useSyncStore.getState().finishSync(new Date().toISOString());
+    // If there are unresolved mutations, the sync was interrupted.
+    const hasUnresolvedMutations =
+      push.retried > 0 || push.conflicts > 0 || push.failed > 0;
+
+    const pullIncomplete = pull.hasMore;
+
+    if (hasUnresolvedMutations || pullIncomplete) {
+      useSyncStore.getState().finishPartialSync();
+    } else {
+      useSyncStore.getState().finishSync(new Date().toISOString());
+    }
 
     return { push, pull };
   } catch (error) {

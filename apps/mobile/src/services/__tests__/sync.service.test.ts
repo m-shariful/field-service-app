@@ -182,4 +182,57 @@ describe("sync service", () => {
     expect(syncPendingMutations).not.toHaveBeenCalled();
     expect(pullJobChanges).not.toHaveBeenCalled();
   });
+
+  // push retries produce partial status
+  it("marks sync as partial when mutations need retry", async () => {
+    useSyncStore.setState({
+      lastSyncedAt: "2026-11-01T10:00:00.000Z",
+    });
+
+    vi.mocked(syncPendingMutations).mockResolvedValue({
+      processed: 2,
+      succeeded: 1,
+      retried: 1,
+      conflicts: 0,
+      failed: 0,
+    });
+
+    await syncNow();
+
+    expect(useSyncStore.getState().phase).toBe("partial");
+
+    // A partial run must not replace the last fully successful timestamp.
+    expect(useSyncStore.getState().lastSyncedAt).toBe(
+      "2026-11-01T10:00:00.000Z",
+    );
+  });
+
+  // conflicts produce partial status
+  it("marks sync as partial when mutations have conflicts", async () => {
+    vi.mocked(syncPendingMutations).mockResolvedValue({
+      processed: 1,
+      succeeded: 0,
+      retried: 0,
+      conflicts: 1,
+      failed: 0,
+    });
+
+    await syncNow();
+
+    expect(useSyncStore.getState().phase).toBe("partial");
+  });
+
+  // incomplete pull produces partial status
+  it("marks sync as partial when pull has more pages remaining", async () => {
+    vi.mocked(pullJobChanges).mockResolvedValue({
+      pages: 20,
+      jobsApplied: 1000,
+      cursor: "cursor-20",
+      hasMore: true,
+    });
+
+    await syncNow();
+
+    expect(useSyncStore.getState().phase).toBe("partial");
+  });
 });

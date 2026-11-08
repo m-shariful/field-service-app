@@ -3,7 +3,7 @@ import { create } from "zustand";
 
 export type ConnectivityStatus = "unknown" | "online" | "offline";
 
-export type SyncPhase = "idle" | "syncing" | "success" | "error";
+export type SyncPhase = "idle" | "syncing" | "success" | "partial" | "error";
 
 const EMPTY_QUEUE_SUMMARY: SyncQueueSummary = {
   queued: 0,
@@ -23,6 +23,7 @@ interface SyncState {
   startSync: () => void;
   finishSync: (completedAt: string) => void;
   failSync: (message: string) => void;
+  finishPartialSync: () => void;
 }
 
 export const useSyncStore = create<SyncState>((set) => ({
@@ -53,5 +54,11 @@ export const useSyncStore = create<SyncState>((set) => ({
     set({
       phase: "error",
       lastError,
+    }),
+
+  finishPartialSync: () =>
+    set({
+      phase: "partial",
+      lastError: null,
     }),
 }));

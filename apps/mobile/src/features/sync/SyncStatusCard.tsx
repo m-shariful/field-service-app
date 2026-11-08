@@ -71,6 +71,10 @@ export function SyncStatusCard({ onSyncFinished }: SyncStatusCardProps) {
   } else if (queueSummary.queued > 0) {
     title = "Changes waiting to sync";
     description = "Pending changes will be retried when synchronization runs.";
+  } else if (phase === "partial") {
+    title = "Sync partially completed";
+    description =
+      "Some changes remain pending, or more server updates need to be downloaded.";
   } else if (phase === "error") {
     title = "Sync could not finish";
     description = lastError ?? "Check your connection, then try again.";
@@ -114,6 +118,7 @@ export function SyncStatusCard({ onSyncFinished }: SyncStatusCardProps) {
               await syncNow();
             } catch (error) {
               // The sync store exposes the error to the user.
+              console.warn("Synchronization failed:", error);
             } finally {
               await onSyncFinished();
             }
