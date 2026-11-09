@@ -100,24 +100,18 @@ export default function JobsScreen() {
     useCallback(() => {
       let cancelled = false;
 
-      const loadJobsAfterSync = async () => {
-        try {
-          await syncNow();
-        } catch (syncError) {
-          console.warn("Jobs screen focus sync failed:", syncError);
-        }
-
-        if (!cancelled) {
-          await fetchJobs();
-        }
-      };
-
       console.log("[Sync Diagnostics]", {
         timestamp: new Date().toISOString(),
         trigger: "jobs-screen-focus",
       });
 
-      void loadJobsAfterSync();
+      const loadJobs = async () => {
+        if (!cancelled) {
+          await fetchJobs();
+        }
+      };
+
+      void loadJobs();
 
       return () => {
         cancelled = true;
