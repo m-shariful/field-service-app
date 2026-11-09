@@ -1,5 +1,9 @@
 import * as Network from "expo-network";
 
+import {
+  registerBackgroundSync,
+  unregisterBackgroundSync,
+} from "@/services/background-sync.service";
 import { Stack, router, usePathname } from "expo-router";
 import { ActivityIndicator, AppState, StyleSheet, View } from "react-native";
 
@@ -114,7 +118,13 @@ export default function RootLayout() {
 
         const authState = useAuthStore.getState();
 
-        if (!authState.isAuthenticated || !authState.user) {
+        // Do not start an automatic sync while authentication
+        // restoration or validation is still in progress.
+        if (
+          authState.isLoading ||
+          !authState.isAuthenticated ||
+          !authState.user
+        ) {
           return;
         }
 
@@ -179,6 +189,28 @@ export default function RootLayout() {
       appStateSubscription.remove();
     };
   }, [isAuthenticated, sessionMode, initializeAuth]);
+
+  useEffect(() => {
+    // Wait until persisted authentication has been restored.
+    if (isLoading) {
+      return;
+    }
+
+    if (!isAuthenticated) {
+      void unregisterBackgroundSync().catch((error) => {
+        console.warn("Could not unregister background sync:", error);
+      });
+
+      return;
+    }
+
+    // Keep the task registered for authenticated users,
+    // including locally trusted offline sessions.
+    // The task itself validates online authentication before syncing.
+    void registerBackgroundSync().catch((error) => {
+      console.warn("Could not register background sync:", error);
+    });
+  }, [isAuthenticated, isLoading]);
 
   if (isLoading) {
     return (

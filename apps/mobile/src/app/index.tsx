@@ -3,6 +3,7 @@ import { refreshSyncQueueSummary, syncNow } from "@/services/sync.service";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
 import {
+  Alert,
   FlatList,
   Pressable,
   RefreshControl,
@@ -15,6 +16,7 @@ import { JobCard } from "@/features/jobs/JobCard";
 import { JobCardSkeleton } from "@/features/jobs/JobCardSkeleton";
 import { getJobs } from "@/features/jobs/jobs.repository";
 import { SyncStatusCard } from "@/features/sync/SyncStatusCard";
+import { triggerBackgroundSyncForTesting } from "@/services/background-sync.service";
 import { useAuthStore } from "@/stores/auth.store";
 import { colors } from "@/theme/colors";
 import { spacing } from "@/theme/spacing";
@@ -145,6 +147,24 @@ export default function JobsScreen() {
     };
   }, [jobs]);
 
+  const handleBackgroundSyncTest = useCallback(async () => {
+    try {
+      const triggered = await triggerBackgroundSyncForTesting();
+
+      Alert.alert(
+        "Background Sync Test",
+        triggered
+          ? "The background task trigger was accepted. Check the device logs."
+          : "The background task trigger was not accepted.",
+      );
+    } catch (error) {
+      Alert.alert(
+        "Background Sync Test Failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }, []);
+
   if (isLoading) {
     return (
       <SafeAreaView style={styles.safeArea}>
@@ -229,6 +249,17 @@ export default function JobsScreen() {
             </Pressable>
 
             <SyncStatusCard onSyncFinished={reloadJobsFromLocal} />
+
+            {__DEV__ && (
+              <Pressable
+                onPress={handleBackgroundSyncTest}
+                style={styles.backgroundTestButton}
+              >
+                <Text style={styles.backgroundTestButtonText}>
+                  Test Background Sync
+                </Text>
+              </Pressable>
+            )}
 
             <View style={styles.summaryRow}>
               <SummaryCard
@@ -534,5 +565,22 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
     color: colors.text.secondary,
+  },
+
+  backgroundTestButton: {
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: spacing.lg,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.surface,
+  },
+
+  backgroundTestButtonText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: colors.primary,
   },
 });
