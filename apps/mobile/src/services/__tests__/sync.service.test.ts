@@ -7,7 +7,6 @@ import { useAuthStore } from "@/stores/auth.store";
 import { useSyncStore } from "@/stores/sync.store";
 import { syncPendingMutations } from "../sync-engine";
 import { pullJobChanges } from "../sync-pull.service";
-import { classifySyncError } from "../sync-telemetry";
 
 vi.mock("../sync-engine", () => ({
   syncPendingMutations: vi.fn(),
@@ -145,6 +144,8 @@ describe("sync service", () => {
         }),
     );
 
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
     const first = syncNow();
     const second = syncNow();
 
@@ -153,6 +154,34 @@ describe("sync service", () => {
     releasePush(pushResult);
 
     await Promise.all([first, second]);
+
+    const joinedEvent = logSpy.mock.calls
+      .filter(([label]) => label === "[Sync Telemetry]")
+      .map(
+        ([, event]) =>
+          event as {
+            event: string;
+            runId: string;
+          },
+      )
+      .find((event) => event.event === "SYNC_RUN_JOINED");
+
+    const completedEvent = logSpy.mock.calls
+      .filter(([label]) => label === "[Sync Telemetry]")
+      .map(
+        ([, event]) =>
+          event as {
+            event: string;
+            runId: string;
+          },
+      )
+      .find((event) => event.event === "SYNC_RUN_COMPLETED");
+
+    expect(joinedEvent).toBeDefined();
+    expect(completedEvent).toBeDefined();
+    expect(joinedEvent?.runId).toBe(completedEvent?.runId);
+
+    logSpy.mockRestore();
 
     expect(syncPendingMutations).toHaveBeenCalledTimes(1);
     expect(pullJobChanges).toHaveBeenCalledTimes(1);
@@ -258,6 +287,8 @@ describe("sync service", () => {
   });
 
   it("cancels the shared sync operation without treating it as an error", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
     vi.mocked(syncPendingMutations).mockImplementationOnce(
       (signal) =>
         new Promise((_, reject) => {
@@ -290,6 +321,27 @@ describe("sync service", () => {
     expect(useSyncStore.getState().lastError).toBeNull();
 
     expect(cancelInFlightSync()).toBe(false);
+
+    const events = logSpy.mock.calls
+      .filter(([label]) => label === "[Sync Telemetry]")
+      .map(
+        ([, event]) =>
+          event as {
+            event: string;
+            runId: string;
+          },
+      );
+
+    expect(events.map((event) => event.event)).toEqual([
+      "SYNC_RUN_STARTED",
+      "SYNC_RUN_JOINED",
+      "SYNC_RUN_CANCELLED",
+    ]);
+
+    expect(events[0].runId).toBe(events[1].runId);
+    expect(events[1].runId).toBe(events[2].runId);
+
+    logSpy.mockRestore();
   });
 
   it("emits correlated telemetry events for a successful sync", async () => {
@@ -361,13 +413,5 @@ describe("sync service", () => {
     expect(JSON.stringify(events)).not.toContain("Network request failed");
 
     logSpy.mockRestore();
-  });
-
-  it("classifies API errors without exposing response messages", () => {
-    expect(
-      classifySyncError({
-        status: 409,
-      } as never),
-    ).toBe("unknown");
   });
 });

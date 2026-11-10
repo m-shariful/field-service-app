@@ -206,10 +206,13 @@ async function runFullSync(
  */
 let inFlightSync: Promise<FullSyncResult> | null = null;
 let inFlightSyncController: AbortController | null = null;
+let inFlightRunId: string | null = null;
 
 export function syncNow(): Promise<FullSyncResult> {
   if (inFlightSync) {
-    emitSyncTelemetry("SYNC_RUN_JOINED", "shared-in-flight");
+    emitSyncTelemetry("SYNC_RUN_JOINED", inFlightRunId ?? "unknown", {
+      joined: true,
+    });
 
     return inFlightSync;
   }
@@ -221,6 +224,8 @@ export function syncNow(): Promise<FullSyncResult> {
     startedAt: new Date(startedAtMs).toISOString(),
     startedAtMs,
   };
+
+  inFlightRunId = context.runId;
 
   const controller = new AbortController();
 
@@ -235,12 +240,14 @@ export function syncNow(): Promise<FullSyncResult> {
       if (inFlightSync === currentSync) {
         inFlightSync = null;
         inFlightSyncController = null;
+        inFlightRunId = null;
       }
     },
     () => {
       if (inFlightSync === currentSync) {
         inFlightSync = null;
         inFlightSyncController = null;
+        inFlightRunId = null;
       }
     },
   );
