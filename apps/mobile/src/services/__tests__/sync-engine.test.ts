@@ -5,8 +5,8 @@ import {
   getLocalJob,
 } from "@/repositories/local-jobs.repository";
 import {
+  claimNextDueMutation,
   hasPendingMutationsForEntity,
-  listDueMutations,
   markEntityMutationsConflict,
   markMutationCancelled,
   updateMutationPayload,
@@ -39,8 +39,9 @@ vi.mock("@/repositories/local-jobs.repository", () => ({
 }));
 
 vi.mock("@/repositories/sync-queue.repository", () => ({
+  claimNextDueMutation: vi.fn(),
   hasPendingMutationsForEntity: vi.fn(),
-  listDueMutations: vi.fn(),
+  // listDueMutations: vi.fn(),
   markMutationConflict: vi.fn(),
   markMutationFailed: vi.fn(),
   markMutationRetry: vi.fn(),
@@ -104,6 +105,39 @@ function makeMutation(
     createdAt: "2026-10-01T10:00:00.000Z",
     updatedAt: "2026-10-01T10:00:00.000Z",
   };
+}
+
+function mockClaimedMutations(...mutations: SyncQueueItem[]) {
+  const queue = mutations.map((mutation) => ({
+    ...mutation,
+    status: "syncing" as const,
+    attemptCount: mutation.attemptCount + 1,
+    lastAttemptAt: new Date().toISOString(),
+  }));
+
+  const conflictedEntities = new Set<string>();
+
+  vi.mocked(markEntityMutationsConflict).mockImplementation(
+    async (_db, _userId, entityType, entityId) => {
+      conflictedEntities.add(`${entityType}:${entityId}`);
+    },
+  );
+
+  vi.mocked(claimNextDueMutation).mockImplementation(async () => {
+    while (queue.length > 0) {
+      const mutation = queue.shift()!;
+
+      const entityKey = `${mutation.entityType}:${mutation.entityId}`;
+
+      if (conflictedEntities.has(entityKey)) {
+        continue;
+      }
+
+      return mutation;
+    }
+
+    return null;
+  });
 }
 
 describe("sync engine - versioned queued updates", () => {
@@ -173,10 +207,7 @@ describe("sync engine - versioned queued updates", () => {
       mutationId: "mutation-update-001",
     });
 
-    vi.mocked(listDueMutations).mockResolvedValue([
-      createMutation,
-      updateMutation,
-    ]);
+    mockClaimedMutations(createMutation, updateMutation);
 
     const result = await syncPendingMutations();
 
@@ -232,10 +263,7 @@ describe("sync engine - versioned queued updates", () => {
       },
     });
 
-    vi.mocked(listDueMutations).mockResolvedValue([
-      firstMutation,
-      laterMutation,
-    ]);
+    mockClaimedMutations(firstMutation, laterMutation);
 
     vi.mocked(apiPatch).mockRejectedValueOnce(
       new ApiError(
@@ -278,7 +306,7 @@ describe("sync engine - versioned queued updates", () => {
       deletedAt: "2026-10-26T10:00:00.000Z",
     };
 
-    vi.mocked(listDueMutations).mockResolvedValue([mutation]);
+    mockClaimedMutations(mutation);
     vi.mocked(apiDelete).mockResolvedValue({
       data: deletedJob,
     } as never);
@@ -316,7 +344,7 @@ describe("sync engine - versioned queued updates", () => {
       mutationId: "mutation-update-cancelled-001",
     });
 
-    vi.mocked(listDueMutations).mockResolvedValue([mutation]);
+    mockClaimedMutations(mutation);
 
     const controller = new AbortController();
 

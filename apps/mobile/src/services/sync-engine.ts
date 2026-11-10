@@ -8,20 +8,20 @@ import {
   type ServerJob,
 } from "@/repositories/local-jobs.repository";
 import {
+  claimNextDueMutation,
   hasPendingMutationsForEntity,
-  listDueMutations,
   markEntityMutationsConflict,
   markMutationCancelled,
   markMutationFailed,
   markMutationRetry,
   markMutationSynced,
-  markMutationSyncing,
   recoverStaleSyncingMutations,
   updateMutationPayload,
 } from "@/repositories/sync-queue.repository";
 
 import { ApiError } from "@/api/api-error";
 import { getDatabase } from "@/db/database";
+import type { SyncQueueItem } from "@/db/types";
 import type { Job } from "@/features/jobs/types";
 import { useAuthStore } from "@/stores/auth.store";
 import { isAbortError, throwIfAborted } from "@/utils/abort";
@@ -29,6 +29,7 @@ import type { SQLiteDatabase } from "expo-sqlite";
 
 const SYNC_BATCH_SIZE = 20;
 
+// Existing recovery threshold. This is not a complete worker lease.
 const STALE_SYNCING_MS = 2 * 60 * 1000;
 
 const MAX_ATTEMPTS = 8;
@@ -43,9 +44,7 @@ function getCurrentUserId(): string | null {
 
 function calculateRetryDelay(attemptCount: number): number {
   const exponentialDelay = 1000 * Math.pow(2, Math.max(0, attemptCount - 1));
-
   const cappedDelay = Math.min(exponentialDelay, 5 * 60 * 1000);
-
   const jitter = Math.floor(Math.random() * 500);
 
   return cappedDelay + jitter;
@@ -132,16 +131,11 @@ async function syncUpdateMutation(
 async function prepareUpdatePayload(
   db: SQLiteDatabase,
   userId: string,
-  mutation: Awaited<ReturnType<typeof listDueMutations>>[number],
+  mutation: SyncQueueItem,
 ): Promise<Record<string, unknown>> {
   const baseVersion = mutation.payload.baseVersion;
 
-  /**
-   * Existing numeric versions are immutable anchors.
-   *
-   * Do not replace them with a newer local version;
-   * a stale version must be allowed to produce a conflict.
-   */
+  // Existing numeric versions are immutable anchors.
   if (typeof baseVersion === "number") {
     if (!Number.isInteger(baseVersion) || baseVersion < 1) {
       throw new Error("INVALID_JOB_BASE_VERSION");
@@ -150,13 +144,7 @@ async function prepareUpdatePayload(
     return mutation.payload;
   }
 
-  /**
-   * Only null has a defined meaning here:
-   * a locally created job had no server version when
-   * this update was originally queued.
-   *
-   * Missing or malformed values are not silently rebased.
-   */
+  // Only null means a locally created job had no server version.
   if (baseVersion !== null) {
     throw new Error("JOB_BASE_VERSION_MISSING_OR_INVALID");
   }
@@ -176,14 +164,9 @@ async function prepareUpdatePayload(
     baseVersion: localJob.version,
   };
 
-  /**
-   * Save before the network request, not after it.
-   * This keeps retries stable if the server succeeds
-   * but the mobile app never receives the response.
-   */
+  // Persist the finalized payload before the network request.
   await updateMutationPayload(db, userId, mutation.id, resolvedPayload);
 
-  // Use the same finalized payload for this attempt.
   mutation.payload = resolvedPayload;
 
   return resolvedPayload;
@@ -192,7 +175,7 @@ async function prepareUpdatePayload(
 async function executeMutation(
   db: SQLiteDatabase,
   userId: string,
-  mutation: Awaited<ReturnType<typeof listDueMutations>>[number],
+  mutation: SyncQueueItem,
   signal?: AbortSignal,
 ): Promise<Job> {
   throwIfAborted(signal);
@@ -272,21 +255,11 @@ export async function syncPendingMutations(
 
   const db = await getDatabase();
 
-  /**
-   * Recover queue entries left in SYNCING state
-   * after an interrupted app process.
-   */
+  // Recover mutations left syncing after an interrupted process.
   await recoverStaleSyncingMutations(
     db,
     userId,
     new Date(Date.now() - STALE_SYNCING_MS),
-  );
-
-  const mutations = await listDueMutations(
-    db,
-    userId,
-    new Date(),
-    SYNC_BATCH_SIZE,
   );
 
   const result: SyncResult = {
@@ -297,30 +270,38 @@ export async function syncPendingMutations(
     failed: 0,
   };
 
-  const conflictedEntities = new Set<string>();
-
-  for (const mutation of mutations) {
+  /**
+   * Claim and process one mutation at a time.
+   *
+   * claimNextDueMutation already:
+   * - selects one due mutation
+   * - transitions it to syncing atomically
+   * - increments attemptCount
+   *
+   * Do not call markMutationSyncing here.
+   */
+  while (result.processed < SYNC_BATCH_SIZE) {
     throwIfAborted(signal);
 
-    const entityKey = `${mutation.entityType}:${mutation.entityId}`;
+    const mutation = await claimNextDueMutation(db, userId, new Date());
 
-    if (conflictedEntities.has(entityKey)) {
-      continue;
+    if (!mutation) {
+      break;
     }
 
     result.processed += 1;
 
-    await markMutationSyncing(db, userId, mutation.id);
-
-    const currentAttempt = mutation.attemptCount + 1;
+    // The claim already incremented attemptCount.
+    const currentAttempt = mutation.attemptCount;
 
     try {
+      // Keep this inside try so an abort after claiming
+      // still returns the mutation to retry.
+      throwIfAborted(signal);
+
       const serverJob = await executeMutation(db, userId, mutation, signal);
 
       if (mutation.operation === "delete") {
-        // Acknowledge the tombstone before marking the queue entry
-        // synced. If local persistence fails, the request can retry
-        // with the same idempotency key.
         await acknowledgeServerDeletedJob(db, userId, serverJob as ServerJob);
 
         await markMutationSynced(db, userId, mutation.id);
@@ -347,15 +328,7 @@ export async function syncPendingMutations(
         throw error;
       }
 
-      /**
-       * 401:
-       *
-       * The API client may already have attempted token
-       * refresh. If the session is no longer recoverable,
-       * the auth store will sign the user out.
-       *
-       * Keep the mutation for a future authenticated session.
-       */
+      // Preserve the mutation when authentication needs attention.
       if (error instanceof ApiError && error.status === 401) {
         const retryAt = new Date(Date.now() + 5 * 60 * 1000);
 
@@ -368,7 +341,6 @@ export async function syncPendingMutations(
         );
 
         result.retried += 1;
-
         break;
       }
 
@@ -380,7 +352,7 @@ export async function syncPendingMutations(
       ) {
         const errorMessage = getErrorMessage(error);
 
-        // Mark the current and all dependent queued mutations.
+        // Conflict the current and all dependent queued mutations.
         await markEntityMutationsConflict(
           db,
           userId,
@@ -388,10 +360,6 @@ export async function syncPendingMutations(
           mutation.entityId,
           errorMessage,
         );
-
-        // Do not process another mutation for this entity
-        // from the batch that was already loaded into memory.
-        conflictedEntities.add(`${mutation.entityType}:${mutation.entityId}`);
 
         if (mutation.entityType === "job") {
           if (mutation.operation === "delete") {
@@ -402,13 +370,9 @@ export async function syncPendingMutations(
         }
 
         result.conflicts += 1;
-
         continue;
       }
 
-      /**
-       * Network/5xx errors are retryable.
-       */
       const retryable = !(error instanceof ApiError) || error.status >= 500;
 
       if (retryable) {
@@ -423,7 +387,6 @@ export async function syncPendingMutations(
           result.failed += 1;
         } else {
           const delay = calculateRetryDelay(currentAttempt);
-
           const retryAt = new Date(Date.now() + delay);
 
           await markMutationRetry(
@@ -437,16 +400,11 @@ export async function syncPendingMutations(
           result.retried += 1;
         }
 
-        /**
-         * Do not hammer the server when it is unavailable.
-         */
+        // Stop this run when the server/network is unavailable.
         break;
       }
 
-      /**
-       * Other 4xx responses represent a permanent
-       * request/domain failure for the current mutation.
-       */
+      // Other 4xx responses are permanent for this mutation.
       await markMutationFailed(db, userId, mutation.id, getErrorMessage(error));
 
       result.failed += 1;

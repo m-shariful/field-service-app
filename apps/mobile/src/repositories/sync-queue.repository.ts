@@ -222,6 +222,107 @@ export async function listDueMutations(
   return rows.map(mapRowToSyncQueueItem);
 }
 
+/**
+ * Atomically claims the next due mutation.
+ *
+ * Selection and status transition happen inside one exclusive
+ * SQLite transaction. Concurrent workers cannot claim the same
+ * pending/retry item.
+ *
+ * The returned item already has:
+ * - status: "syncing"
+ * - attemptCount: incremented
+ * - lastAttemptAt: claim timestamp
+ *
+ * A null result means there are no due mutations.
+ */
+export async function claimNextDueMutation(
+  db: SQLiteDatabase,
+  userId: string,
+  now: Date = new Date(),
+): Promise<SyncQueueItem | null> {
+  const nowIso = now.toISOString();
+
+  let claimedMutation: SyncQueueItem | null = null;
+
+  await db.withExclusiveTransactionAsync(async (transaction) => {
+    const row = await transaction.getFirstAsync<SyncQueueRow>(
+      `
+        SELECT
+          id,
+          user_id,
+          entity_type,
+          entity_id,
+          operation,
+          payload_json,
+          mutation_id,
+          status,
+          attempt_count,
+          last_attempt_at,
+          next_attempt_at,
+          last_error,
+          created_at,
+          updated_at
+        FROM sync_queue
+        WHERE user_id = ?
+          AND status IN ('pending', 'retry')
+          AND (
+            next_attempt_at IS NULL
+            OR next_attempt_at <= ?
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM sync_queue AS active
+            WHERE active.user_id = sync_queue.user_id
+              AND active.entity_type = sync_queue.entity_type
+              AND active.entity_id = sync_queue.entity_id
+              AND active.status = 'syncing'
+          )
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+      `,
+      userId,
+      nowIso,
+    );
+
+    if (!row) {
+      return;
+    }
+
+    const updateResult = await transaction.runAsync(
+      `
+        UPDATE sync_queue
+        SET
+          status = 'syncing',
+          attempt_count = attempt_count + 1,
+          last_attempt_at = ?,
+          updated_at = ?
+        WHERE id = ?
+          AND user_id = ?
+          AND status IN ('pending', 'retry')
+      `,
+      nowIso,
+      nowIso,
+      row.id,
+      userId,
+    );
+
+    if (updateResult.changes !== 1) {
+      return;
+    }
+
+    claimedMutation = mapRowToSyncQueueItem({
+      ...row,
+      status: "syncing",
+      attempt_count: row.attempt_count + 1,
+      last_attempt_at: nowIso,
+      updated_at: nowIso,
+    });
+  });
+
+  return claimedMutation;
+}
+
 export async function countPendingMutations(
   db: SQLiteDatabase,
   userId: string,
