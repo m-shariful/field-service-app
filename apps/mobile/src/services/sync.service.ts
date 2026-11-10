@@ -9,6 +9,11 @@ import { useSyncStore } from "@/stores/sync.store";
 import { isAbortError } from "@/utils/abort";
 import { syncPendingMutations } from "./sync-engine";
 import { pullJobChanges } from "./sync-pull.service";
+import {
+  classifySyncError,
+  createSyncRunId,
+  emitSyncTelemetry,
+} from "./sync-telemetry";
 
 export interface FullSyncResult {
   push: Awaited<ReturnType<typeof syncPendingMutations>>;
@@ -37,16 +42,58 @@ const EMPTY_SYNC_RESULT: FullSyncResult = {
   },
 };
 
-function logSyncExecution(event: string, details?: Record<string, unknown>) {
-  console.log("[Sync Execution]", {
-    timestamp: new Date().toISOString(),
-    event,
-    ...details,
+interface SyncRunContext {
+  runId: string;
+  startedAt: string;
+  startedAtMs: number;
+}
+
+function getDuration(context: SyncRunContext): number {
+  return Math.max(0, Date.now() - context.startedAtMs);
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error
+    ? error.message
+    : "Synchronization could not be completed.";
+}
+
+function emitRunCompleted(
+  context: SyncRunContext,
+  result: FullSyncResult,
+  outcome: "success" | "partial",
+): void {
+  emitSyncTelemetry("SYNC_RUN_COMPLETED", context.runId, {
+    startedAt: context.startedAt,
+    completedAt: new Date().toISOString(),
+    durationMs: getDuration(context),
+    outcome,
+    push: result.push,
+    pull: {
+      pages: result.pull.pages,
+      jobsApplied: result.pull.jobsApplied,
+      hasMore: result.pull.hasMore,
+    },
   });
 }
 
+async function emitRunFailure(
+  context: SyncRunContext,
+  error: unknown,
+  cancelled: boolean,
+): Promise<void> {
+  emitSyncTelemetry(
+    cancelled ? "SYNC_RUN_CANCELLED" : "SYNC_RUN_FAILED",
+    context.runId,
+    {
+      durationMs: getDuration(context),
+      errorCategory: classifySyncError(error),
+    },
+  );
+}
+
 /**
- * Refresh the visible queue counts without allowing a local
+ * Refresh visible queue counts without allowing a local
  * database failure to hide the primary sync result.
  */
 export async function refreshSyncQueueSummary(): Promise<void> {
@@ -67,13 +114,14 @@ export async function refreshSyncQueueSummary(): Promise<void> {
   }
 }
 
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error
-    ? error.message
-    : "Synchronization could not be completed.";
-}
+async function runFullSync(
+  context: SyncRunContext,
+  signal?: AbortSignal,
+): Promise<FullSyncResult> {
+  emitSyncTelemetry("SYNC_RUN_STARTED", context.runId, {
+    startedAt: context.startedAt,
+  });
 
-async function runFullSync(signal?: AbortSignal): Promise<FullSyncResult> {
   const authState = useAuthStore.getState();
 
   if (
@@ -82,6 +130,14 @@ async function runFullSync(signal?: AbortSignal): Promise<FullSyncResult> {
     authState.sessionMode !== "online"
   ) {
     await refreshSyncQueueSummary();
+
+    emitSyncTelemetry("SYNC_RUN_COMPLETED", context.runId, {
+      durationMs: getDuration(context),
+      outcome: "success",
+      skipped: true,
+      reason: "SESSION_NOT_ONLINE",
+    });
+
     return EMPTY_SYNC_RESULT;
   }
 
@@ -95,23 +151,33 @@ async function runFullSync(signal?: AbortSignal): Promise<FullSyncResult> {
 
     await refreshSyncQueueSummary();
 
-    // If there are unresolved mutations, the sync was interrupted.
     const hasUnresolvedMutations =
       push.retried > 0 || push.conflicts > 0 || push.failed > 0;
 
     const pullIncomplete = pull.hasMore;
 
-    if (hasUnresolvedMutations || pullIncomplete) {
+    const outcome =
+      hasUnresolvedMutations || pullIncomplete ? "partial" : "success";
+
+    if (outcome === "partial") {
       useSyncStore.getState().finishPartialSync();
     } else {
       useSyncStore.getState().finishSync(new Date().toISOString());
     }
 
-    return { push, pull };
+    const result = { push, pull };
+
+    emitRunCompleted(context, result, outcome);
+
+    return result;
   } catch (error) {
     await refreshSyncQueueSummary();
 
-    if (isAbortError(error, signal)) {
+    const cancelled = isAbortError(error, signal);
+
+    await emitRunFailure(context, error, cancelled);
+
+    if (cancelled) {
       useSyncStore.getState().cancelSync();
       throw error;
     }
@@ -125,52 +191,42 @@ async function runFullSync(signal?: AbortSignal): Promise<FullSyncResult> {
 /**
  * Single-flight synchronization:
  *
- * If startup, network reconnection, and the UI request a sync
- * simultaneously, they all share the same in-flight operation.
+ * Concurrent callers share the same in-flight operation.
  */
 let inFlightSync: Promise<FullSyncResult> | null = null;
 let inFlightSyncController: AbortController | null = null;
 
-/**
- * All callers share one sync operation.
- *
- * Cancellation is intentionally operation-wide, not
- * caller-specific. One caller must not accidentally
- * cancel work shared by other callers.
- */
 export function syncNow(): Promise<FullSyncResult> {
   if (inFlightSync) {
-    logSyncExecution("joined-in-flight-sync");
+    emitSyncTelemetry("SYNC_RUN_JOINED", "shared-in-flight");
+
     return inFlightSync;
   }
 
-  logSyncExecution("new-sync-started");
+  const startedAtMs = Date.now();
+
+  const context: SyncRunContext = {
+    runId: createSyncRunId(),
+    startedAt: new Date(startedAtMs).toISOString(),
+    startedAtMs,
+  };
 
   const controller = new AbortController();
+
   inFlightSyncController = controller;
 
-  const currentSync = runFullSync(controller.signal);
+  const currentSync = runFullSync(context, controller.signal);
 
   inFlightSync = currentSync;
 
   void currentSync.then(
-    (result) => {
-      logSyncExecution("sync-finished", {
-        pushProcessed: result.push.processed,
-        pullPages: result.pull.pages,
-        jobsApplied: result.pull.jobsApplied,
-      });
-
+    () => {
       if (inFlightSync === currentSync) {
         inFlightSync = null;
         inFlightSyncController = null;
       }
     },
-    (error: unknown) => {
-      logSyncExecution("sync-failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-
+    () => {
       if (inFlightSync === currentSync) {
         inFlightSync = null;
         inFlightSyncController = null;
@@ -182,17 +238,14 @@ export function syncNow(): Promise<FullSyncResult> {
 }
 
 /**
- * Explicitly cancel the currently shared sync operation.
+ * Explicitly cancel the shared sync operation.
  *
- * This must not be called just because the app moves
- * to the background.
+ * Backgrounding the app must not automatically cancel sync.
  */
 export function cancelInFlightSync(): boolean {
   if (!inFlightSyncController || inFlightSyncController.signal.aborted) {
     return false;
   }
-
-  logSyncExecution("sync-cancellation-requested");
 
   inFlightSyncController.abort();
 

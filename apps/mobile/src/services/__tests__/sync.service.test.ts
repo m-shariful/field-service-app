@@ -7,6 +7,7 @@ import { useAuthStore } from "@/stores/auth.store";
 import { useSyncStore } from "@/stores/sync.store";
 import { syncPendingMutations } from "../sync-engine";
 import { pullJobChanges } from "../sync-pull.service";
+import { classifySyncError } from "../sync-telemetry";
 
 vi.mock("../sync-engine", () => ({
   syncPendingMutations: vi.fn(),
@@ -269,5 +270,84 @@ describe("sync service", () => {
     expect(useSyncStore.getState().lastError).toBeNull();
 
     expect(cancelInFlightSync()).toBe(false);
+  });
+
+  it("emits correlated telemetry events for a successful sync", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await syncNow();
+
+    const events = logSpy.mock.calls
+      .filter(([label]) => label === "[Sync Telemetry]")
+      .map(
+        ([, event]) =>
+          event as {
+            event: string;
+            runId: string;
+            details?: Record<string, unknown>;
+          },
+      );
+
+    expect(events.map((event) => event.event)).toEqual([
+      "SYNC_RUN_STARTED",
+      "SYNC_RUN_COMPLETED",
+    ]);
+
+    expect(events[0].runId).toBe(events[1].runId);
+
+    expect(events[1].details).toMatchObject({
+      outcome: "success",
+      push: pushResult,
+      pull: {
+        pages: 1,
+        jobsApplied: 2,
+        hasMore: false,
+      },
+    });
+
+    expect(events[1].details?.durationMs).toEqual(expect.any(Number));
+
+    logSpy.mockRestore();
+  });
+
+  it("emits failure telemetry without exposing raw error messages", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    vi.mocked(syncPendingMutations).mockRejectedValueOnce(
+      new Error("Network request failed"),
+    );
+
+    await expect(syncNow()).rejects.toThrow();
+
+    const events = logSpy.mock.calls
+      .filter(([label]) => label === "[Sync Telemetry]")
+      .map(
+        ([, event]) =>
+          event as {
+            event: string;
+            details?: Record<string, unknown>;
+          },
+      );
+
+    expect(events.map((event) => event.event)).toEqual([
+      "SYNC_RUN_STARTED",
+      "SYNC_RUN_FAILED",
+    ]);
+
+    expect(events[1].details).toMatchObject({
+      errorCategory: "network",
+    });
+
+    expect(JSON.stringify(events)).not.toContain("Network request failed");
+
+    logSpy.mockRestore();
+  });
+
+  it("classifies API errors without exposing response messages", () => {
+    expect(
+      classifySyncError({
+        status: 409,
+      } as never),
+    ).toBe("unknown");
   });
 });
