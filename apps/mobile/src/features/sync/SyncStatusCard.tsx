@@ -24,6 +24,14 @@ function formatLastSync(value: string | null): string | null {
   return date.toLocaleString();
 }
 
+function formatDuration(durationMs: number): string {
+  if (durationMs < 1000) {
+    return `${Math.round(durationMs)} ms`;
+  }
+
+  return `${(durationMs / 1000).toFixed(1)} sec`;
+}
+
 interface SyncStatusCardProps {
   onSyncFinished: () => void | Promise<void>;
 }
@@ -34,12 +42,12 @@ export function SyncStatusCard({ onSyncFinished }: SyncStatusCardProps) {
   const lastSyncedAt = useSyncStore((state) => state.lastSyncedAt);
   const lastError = useSyncStore((state) => state.lastError);
   const queueSummary = useSyncStore((state) => state.queueSummary);
+  const lastRunMetrics = useSyncStore((state) => state.lastRunMetrics);
 
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const sessionMode = useAuthStore((state) => state.sessionMode);
 
   const isOffline = connectivity === "offline" || sessionMode === "offline";
-
   const isSyncing = phase === "syncing";
 
   const canSync =
@@ -53,7 +61,6 @@ export function SyncStatusCard({ onSyncFinished }: SyncStatusCardProps) {
 
   if (isOffline) {
     title = "Offline — changes are saved locally";
-
     description =
       connectivity === "online"
         ? "Restoring your online session before syncing."
@@ -97,6 +104,32 @@ export function SyncStatusCard({ onSyncFinished }: SyncStatusCardProps) {
           Failed: {queueSummary.failed}
         </Text>
 
+        {lastRunMetrics && (
+          <View style={styles.metrics}>
+            <Text style={styles.metricsTitle}>
+              Last completed run · {lastRunMetrics.outcome}
+            </Text>
+
+            <Text style={styles.metricsText}>
+              Duration: {formatDuration(lastRunMetrics.durationMs)}
+            </Text>
+
+            <Text style={styles.metricsText}>
+              Push: {lastRunMetrics.push.succeeded}/
+              {lastRunMetrics.push.processed} succeeded ·{" "}
+              {lastRunMetrics.push.retried} retried ·{" "}
+              {lastRunMetrics.push.conflicts} conflicts ·{" "}
+              {lastRunMetrics.push.failed} failed
+            </Text>
+
+            <Text style={styles.metricsText}>
+              Pull: {lastRunMetrics.pull.jobsApplied} jobs across{" "}
+              {lastRunMetrics.pull.pages} pages
+              {lastRunMetrics.pull.hasMore ? " · More available" : ""}
+            </Text>
+          </View>
+        )}
+
         {lastSyncLabel && (
           <Text style={styles.lastSync}>
             Last successful sync: {lastSyncLabel}
@@ -117,7 +150,6 @@ export function SyncStatusCard({ onSyncFinished }: SyncStatusCardProps) {
             try {
               await syncNow();
             } catch (error) {
-              // The sync store exposes the error to the user.
               console.warn("Synchronization failed:", error);
             } finally {
               await onSyncFinished();
@@ -179,8 +211,29 @@ const styles = StyleSheet.create({
     color: "#475569",
   },
 
+  metrics: {
+    marginTop: 10,
+    paddingTop: 9,
+    borderTopWidth: 1,
+    borderTopColor: "#BFDBFE",
+    gap: 4,
+  },
+
+  metricsTitle: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#1E3A8A",
+    textTransform: "capitalize",
+  },
+
+  metricsText: {
+    fontSize: 10,
+    lineHeight: 15,
+    color: "#334155",
+  },
+
   lastSync: {
-    marginTop: 5,
+    marginTop: 7,
     fontSize: 11,
     color: "#64748B",
   },

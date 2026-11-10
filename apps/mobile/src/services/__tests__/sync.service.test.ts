@@ -60,6 +60,7 @@ describe("sync service", () => {
         conflicts: 0,
         failed: 0,
       },
+      lastRunMetrics: null,
     });
 
     vi.mocked(useAuthStore.getState).mockReturnValue({
@@ -115,6 +116,23 @@ describe("sync service", () => {
       conflicts: 1,
       failed: 0,
     });
+
+    const metrics = useSyncStore.getState().lastRunMetrics;
+
+    expect(metrics).not.toBeNull();
+
+    expect(metrics).toMatchObject({
+      outcome: "success",
+      push: pushResult,
+      pull: {
+        pages: 1,
+        jobsApplied: 2,
+        hasMore: false,
+      },
+    });
+
+    expect(metrics?.durationMs).toEqual(expect.any(Number));
+    expect(metrics?.runId).toBeTruthy();
   });
 
   it("shares one in-flight sync across concurrent callers", async () => {
@@ -206,6 +224,8 @@ describe("sync service", () => {
     expect(useSyncStore.getState().lastSyncedAt).toBe(
       "2026-11-01T10:00:00.000Z",
     );
+
+    expect(useSyncStore.getState().lastRunMetrics?.outcome).toBe("partial");
   });
 
   // conflicts produce partial status

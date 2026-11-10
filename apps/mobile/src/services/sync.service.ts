@@ -15,6 +15,8 @@ import {
   emitSyncTelemetry,
 } from "./sync-telemetry";
 
+import type { SyncRunMetrics } from "./sync-telemetry";
+
 export interface FullSyncResult {
   push: Awaited<ReturnType<typeof syncPendingMutations>>;
   pull: Awaited<ReturnType<typeof pullJobChanges>>;
@@ -63,9 +65,12 @@ function emitRunCompleted(
   result: FullSyncResult,
   outcome: "success" | "partial",
 ): void {
-  emitSyncTelemetry("SYNC_RUN_COMPLETED", context.runId, {
+  const completedAt = new Date().toISOString();
+
+  const metrics: SyncRunMetrics = {
+    runId: context.runId,
     startedAt: context.startedAt,
-    completedAt: new Date().toISOString(),
+    completedAt,
     durationMs: getDuration(context),
     outcome,
     push: result.push,
@@ -74,6 +79,12 @@ function emitRunCompleted(
       jobsApplied: result.pull.jobsApplied,
       hasMore: result.pull.hasMore,
     },
+  };
+
+  useSyncStore.getState().setLastRunMetrics(metrics);
+
+  emitSyncTelemetry("SYNC_RUN_COMPLETED", context.runId, {
+    ...metrics,
   });
 }
 

@@ -1,4 +1,5 @@
 import type { SyncQueueSummary } from "@/repositories/sync-queue.repository";
+import type { SyncRunMetrics } from "@/services/sync-telemetry";
 import { create } from "zustand";
 
 export type ConnectivityStatus = "unknown" | "online" | "offline";
@@ -17,9 +18,11 @@ interface SyncState {
   lastSyncedAt: string | null;
   lastError: string | null;
   queueSummary: SyncQueueSummary;
+  lastRunMetrics: SyncRunMetrics | null;
 
   setConnectivity: (status: ConnectivityStatus) => void;
   setQueueSummary: (summary: SyncQueueSummary) => void;
+  setLastRunMetrics: (metrics: SyncRunMetrics) => void;
   startSync: () => void;
   finishSync: (completedAt: string) => void;
   failSync: (message: string) => void;
@@ -33,10 +36,13 @@ export const useSyncStore = create<SyncState>((set) => ({
   lastSyncedAt: null,
   lastError: null,
   queueSummary: EMPTY_QUEUE_SUMMARY,
+  lastRunMetrics: null,
 
   setConnectivity: (connectivity) => set({ connectivity }),
 
   setQueueSummary: (queueSummary) => set({ queueSummary }),
+
+  setLastRunMetrics: (lastRunMetrics) => set({ lastRunMetrics }),
 
   startSync: () =>
     set({
