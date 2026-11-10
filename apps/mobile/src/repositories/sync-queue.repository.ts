@@ -327,6 +327,47 @@ export async function markMutationRetry(
   );
 }
 
+/**
+ * Cancellation is not a failed attempt.
+ *
+ * Keep the durable mutation in the queue and make it
+ * immediately eligible for a future sync.
+ *
+ * The same mutationId is retained, so a retry remains
+ * idempotent even if the server processed the request
+ * before the client observed the cancellation.
+ */
+export async function markMutationCancelled(
+  db: SQLiteDatabase,
+  userId: string,
+  queueId: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+
+  await db.runAsync(
+    `
+      UPDATE sync_queue
+      SET
+        status = 'retry',
+        attempt_count = CASE
+          WHEN attempt_count > 0 THEN attempt_count - 1
+          ELSE 0
+        END,
+        next_attempt_at = ?,
+        last_error = ?,
+        updated_at = ?
+      WHERE id = ?
+        AND user_id = ?
+        AND status = 'syncing'
+    `,
+    now,
+    "SYNC_CANCELLED",
+    now,
+    queueId,
+    userId,
+  );
+}
+
 export async function markMutationConflict(
   db: SQLiteDatabase,
   userId: string,

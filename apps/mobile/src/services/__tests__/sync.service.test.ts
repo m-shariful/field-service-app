@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cancelInFlightSync, syncNow } from "../sync.service";
 
 import { getDatabase } from "@/db/database";
 import { getSyncQueueSummary } from "@/repositories/sync-queue.repository";
@@ -6,7 +7,6 @@ import { useAuthStore } from "@/stores/auth.store";
 import { useSyncStore } from "@/stores/sync.store";
 import { syncPendingMutations } from "../sync-engine";
 import { pullJobChanges } from "../sync-pull.service";
-import { syncNow } from "../sync.service";
 
 vi.mock("../sync-engine", () => ({
   syncPendingMutations: vi.fn(),
@@ -234,5 +234,40 @@ describe("sync service", () => {
     await syncNow();
 
     expect(useSyncStore.getState().phase).toBe("partial");
+  });
+
+  it("cancels the shared sync operation without treating it as an error", async () => {
+    vi.mocked(syncPendingMutations).mockImplementationOnce(
+      (signal) =>
+        new Promise((_, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () => {
+              const error = new Error("The operation was aborted.");
+              error.name = "AbortError";
+              reject(error);
+            },
+            { once: true },
+          );
+        }),
+    );
+
+    const first = syncNow();
+    const second = syncNow();
+
+    expect(second).toBe(first);
+
+    expect(cancelInFlightSync()).toBe(true);
+
+    await expect(first).rejects.toMatchObject({
+      name: "AbortError",
+    });
+
+    expect(pullJobChanges).not.toHaveBeenCalled();
+
+    expect(useSyncStore.getState().phase).toBe("idle");
+    expect(useSyncStore.getState().lastError).toBeNull();
+
+    expect(cancelInFlightSync()).toBe(false);
   });
 });

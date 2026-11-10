@@ -34,7 +34,11 @@ TaskManager.defineTask(BACKGROUND_SYNC_TASK, async () => {
       return BackgroundTask.BackgroundTaskResult.Success;
     }
 
+    console.log("[Background Sync] Calling syncNow");
+
     const result = await syncNow();
+
+    console.log("[Background Sync] syncNow resolved");
 
     const shouldRetry = result.push.retried > 0 || result.pull.hasMore;
 

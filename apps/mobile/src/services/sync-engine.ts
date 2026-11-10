@@ -11,6 +11,7 @@ import {
   hasPendingMutationsForEntity,
   listDueMutations,
   markEntityMutationsConflict,
+  markMutationCancelled,
   markMutationFailed,
   markMutationRetry,
   markMutationSynced,
@@ -23,6 +24,7 @@ import { ApiError } from "@/api/api-error";
 import { getDatabase } from "@/db/database";
 import type { Job } from "@/features/jobs/types";
 import { useAuthStore } from "@/stores/auth.store";
+import { isAbortError, throwIfAborted } from "@/utils/abort";
 import type { SQLiteDatabase } from "expo-sqlite";
 
 const SYNC_BATCH_SIZE = 20;
@@ -65,6 +67,7 @@ async function syncDeleteMutation(
   jobId: string,
   mutationId: string,
   payload: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<Job> {
   const baseVersion = payload.baseVersion;
 
@@ -83,6 +86,7 @@ async function syncDeleteMutation(
       headers: {
         "Idempotency-Key": mutationId,
       },
+      signal,
     },
   );
 
@@ -93,11 +97,13 @@ async function syncCreateMutation(
   userId: string,
   mutationId: string,
   payload: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<Job> {
   const response = await apiPost<JobResponse>("/api/jobs", payload, {
     headers: {
       "Idempotency-Key": mutationId,
     },
+    signal,
   });
 
   return response.data;
@@ -107,6 +113,7 @@ async function syncUpdateMutation(
   jobId: string,
   mutationId: string,
   payload: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<Job> {
   const response = await apiPatch<JobResponse>(
     `/api/jobs/${jobId}/status`,
@@ -115,6 +122,7 @@ async function syncUpdateMutation(
       headers: {
         "Idempotency-Key": mutationId,
       },
+      signal,
     },
   );
 
@@ -185,18 +193,29 @@ async function executeMutation(
   db: SQLiteDatabase,
   userId: string,
   mutation: Awaited<ReturnType<typeof listDueMutations>>[number],
+  signal?: AbortSignal,
 ): Promise<Job> {
+  throwIfAborted(signal);
+
   switch (mutation.operation) {
     case "create":
-      return syncCreateMutation(userId, mutation.mutationId, mutation.payload);
+      return syncCreateMutation(
+        userId,
+        mutation.mutationId,
+        mutation.payload,
+        signal,
+      );
 
     case "update": {
       const payload = await prepareUpdatePayload(db, userId, mutation);
+
+      throwIfAborted(signal);
 
       return syncUpdateMutation(
         mutation.entityId,
         mutation.mutationId,
         payload,
+        signal,
       );
     }
 
@@ -205,6 +224,7 @@ async function executeMutation(
         mutation.entityId,
         mutation.mutationId,
         mutation.payload,
+        signal,
       );
   }
 }
@@ -217,7 +237,9 @@ export interface SyncResult {
   failed: number;
 }
 
-export async function syncPendingMutations(): Promise<SyncResult> {
+export async function syncPendingMutations(
+  signal?: AbortSignal,
+): Promise<SyncResult> {
   const authState = useAuthStore.getState();
 
   if (
@@ -245,6 +267,8 @@ export async function syncPendingMutations(): Promise<SyncResult> {
       failed: 0,
     };
   }
+
+  throwIfAborted(signal);
 
   const db = await getDatabase();
 
@@ -276,6 +300,8 @@ export async function syncPendingMutations(): Promise<SyncResult> {
   const conflictedEntities = new Set<string>();
 
   for (const mutation of mutations) {
+    throwIfAborted(signal);
+
     const entityKey = `${mutation.entityType}:${mutation.entityId}`;
 
     if (conflictedEntities.has(entityKey)) {
@@ -289,7 +315,7 @@ export async function syncPendingMutations(): Promise<SyncResult> {
     const currentAttempt = mutation.attemptCount + 1;
 
     try {
-      const serverJob = await executeMutation(db, userId, mutation);
+      const serverJob = await executeMutation(db, userId, mutation, signal);
 
       if (mutation.operation === "delete") {
         // Acknowledge the tombstone before marking the queue entry
@@ -316,6 +342,11 @@ export async function syncPendingMutations(): Promise<SyncResult> {
 
       result.succeeded += 1;
     } catch (error) {
+      if (isAbortError(error, signal)) {
+        await markMutationCancelled(db, userId, mutation.id);
+        throw error;
+      }
+
       /**
        * 401:
        *

@@ -8,6 +8,7 @@ import {
   hasPendingMutationsForEntity,
   listDueMutations,
   markEntityMutationsConflict,
+  markMutationCancelled,
   updateMutationPayload,
 } from "@/repositories/sync-queue.repository";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -48,6 +49,7 @@ vi.mock("@/repositories/sync-queue.repository", () => ({
   recoverStaleSyncingMutations: vi.fn(),
   updateMutationPayload: vi.fn(),
   markEntityMutationsConflict: vi.fn(),
+  markMutationCancelled: vi.fn(),
 }));
 
 vi.mock("@/stores/auth.store", () => ({
@@ -301,5 +303,48 @@ describe("sync engine - versioned queued updates", () => {
       userId,
       deletedJob,
     );
+  });
+
+  it("keeps a mutation retryable when its request is cancelled", async () => {
+    const mutation = makeMutation({
+      id: "queue-update-cancelled-001",
+      operation: "update",
+      payload: {
+        status: "in_progress",
+        baseVersion: 1,
+      },
+      mutationId: "mutation-update-cancelled-001",
+    });
+
+    vi.mocked(listDueMutations).mockResolvedValue([mutation]);
+
+    const controller = new AbortController();
+
+    vi.mocked(apiPatch).mockImplementationOnce(
+      async (_path, _body, options) => {
+        expect(options?.signal).toBe(controller.signal);
+
+        controller.abort();
+
+        const error = new Error("The operation was aborted.");
+        error.name = "AbortError";
+
+        throw error;
+      },
+    );
+
+    await expect(syncPendingMutations(controller.signal)).rejects.toMatchObject(
+      {
+        name: "AbortError",
+      },
+    );
+
+    expect(markMutationCancelled).toHaveBeenCalledWith(
+      expect.anything(),
+      userId,
+      mutation.id,
+    );
+
+    expect(acknowledgeServerJob).not.toHaveBeenCalled();
   });
 });

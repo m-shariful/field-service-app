@@ -6,6 +6,7 @@ import {
 import { useAuthStore } from "@/stores/auth.store";
 import { useSyncStore } from "@/stores/sync.store";
 
+import { isAbortError } from "@/utils/abort";
 import { syncPendingMutations } from "./sync-engine";
 import { pullJobChanges } from "./sync-pull.service";
 
@@ -72,7 +73,7 @@ function getErrorMessage(error: unknown): string {
     : "Synchronization could not be completed.";
 }
 
-async function runFullSync(): Promise<FullSyncResult> {
+async function runFullSync(signal?: AbortSignal): Promise<FullSyncResult> {
   const authState = useAuthStore.getState();
 
   if (
@@ -88,9 +89,9 @@ async function runFullSync(): Promise<FullSyncResult> {
 
   try {
     // Push local mutations before pulling remote changes.
-    const push = await syncPendingMutations();
+    const push = await syncPendingMutations(signal);
 
-    const pull = await pullJobChanges();
+    const pull = await pullJobChanges(signal);
 
     await refreshSyncQueueSummary();
 
@@ -110,6 +111,11 @@ async function runFullSync(): Promise<FullSyncResult> {
   } catch (error) {
     await refreshSyncQueueSummary();
 
+    if (isAbortError(error, signal)) {
+      useSyncStore.getState().cancelSync();
+      throw error;
+    }
+
     useSyncStore.getState().failSync(getErrorMessage(error));
 
     throw error;
@@ -123,7 +129,15 @@ async function runFullSync(): Promise<FullSyncResult> {
  * simultaneously, they all share the same in-flight operation.
  */
 let inFlightSync: Promise<FullSyncResult> | null = null;
+let inFlightSyncController: AbortController | null = null;
 
+/**
+ * All callers share one sync operation.
+ *
+ * Cancellation is intentionally operation-wide, not
+ * caller-specific. One caller must not accidentally
+ * cancel work shared by other callers.
+ */
 export function syncNow(): Promise<FullSyncResult> {
   if (inFlightSync) {
     logSyncExecution("joined-in-flight-sync");
@@ -132,7 +146,10 @@ export function syncNow(): Promise<FullSyncResult> {
 
   logSyncExecution("new-sync-started");
 
-  const currentSync = runFullSync();
+  const controller = new AbortController();
+  inFlightSyncController = controller;
+
+  const currentSync = runFullSync(controller.signal);
 
   inFlightSync = currentSync;
 
@@ -146,6 +163,7 @@ export function syncNow(): Promise<FullSyncResult> {
 
       if (inFlightSync === currentSync) {
         inFlightSync = null;
+        inFlightSyncController = null;
       }
     },
     (error: unknown) => {
@@ -155,9 +173,28 @@ export function syncNow(): Promise<FullSyncResult> {
 
       if (inFlightSync === currentSync) {
         inFlightSync = null;
+        inFlightSyncController = null;
       }
     },
   );
 
   return currentSync;
+}
+
+/**
+ * Explicitly cancel the currently shared sync operation.
+ *
+ * This must not be called just because the app moves
+ * to the background.
+ */
+export function cancelInFlightSync(): boolean {
+  if (!inFlightSyncController || inFlightSyncController.signal.aborted) {
+    return false;
+  }
+
+  logSyncExecution("sync-cancellation-requested");
+
+  inFlightSyncController.abort();
+
+  return true;
 }

@@ -15,6 +15,7 @@ import {
 } from "@/repositories/sync-state.repository";
 
 import { useAuthStore } from "@/stores/auth.store";
+import { throwIfAborted } from "@/utils/abort";
 
 interface JobSyncResponse {
   data: {
@@ -43,7 +44,9 @@ export interface PullSyncResult {
   hasMore: boolean;
 }
 
-export async function pullJobChanges(): Promise<PullSyncResult> {
+export async function pullJobChanges(
+  signal?: AbortSignal,
+): Promise<PullSyncResult> {
   const authState = useAuthStore.getState();
 
   if (
@@ -82,6 +85,8 @@ export async function pullJobChanges(): Promise<PullSyncResult> {
   let hasMore = true;
 
   while (hasMore && pages < MAX_PAGES_PER_RUN) {
+    throwIfAborted(signal);
+
     const query = new URLSearchParams();
 
     query.set("limit", String(PAGE_SIZE));
@@ -92,6 +97,7 @@ export async function pullJobChanges(): Promise<PullSyncResult> {
 
     const response = await apiGet<JobSyncResponse>(
       `/api/jobs/sync?${query.toString()}`,
+      { signal },
     );
 
     const page = response.data;

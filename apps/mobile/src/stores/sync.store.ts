@@ -24,6 +24,7 @@ interface SyncState {
   finishSync: (completedAt: string) => void;
   failSync: (message: string) => void;
   finishPartialSync: () => void;
+  cancelSync: () => void;
 }
 
 export const useSyncStore = create<SyncState>((set) => ({
@@ -59,6 +60,12 @@ export const useSyncStore = create<SyncState>((set) => ({
   finishPartialSync: () =>
     set({
       phase: "partial",
+      lastError: null,
+    }),
+
+  cancelSync: () =>
+    set({
+      phase: "idle",
       lastError: null,
     }),
 }));
