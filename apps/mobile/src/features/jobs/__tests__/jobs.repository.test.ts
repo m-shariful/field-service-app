@@ -103,6 +103,9 @@ describe("jobs repository - offline aware reads", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
+    // Default: no cached jobs unless a test explicitly provides them.
+    vi.mocked(listLocalJobs).mockResolvedValue([]);
+
     vi.mocked(useAuthStore.getState).mockReturnValue({
       user: {
         id: userId,
