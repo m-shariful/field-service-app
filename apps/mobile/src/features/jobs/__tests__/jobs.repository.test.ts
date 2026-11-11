@@ -17,6 +17,7 @@ import {
   createJob,
   getJobById,
   getJobs,
+  getLocalJobs,
   updateJobStatus,
 } from "../jobs.repository";
 
@@ -399,5 +400,26 @@ describe("jobs repository - offline aware reads", () => {
     // 1. updateLocalJobStatus()
     // 2. enqueueMutation()
     // 3. returned status = "in_progress"
+  });
+
+  it("reads jobs from SQLite without making an API request", async () => {
+    vi.mocked(listLocalJobs).mockResolvedValue(cachedJobs as never);
+
+    const result = await getLocalJobs();
+
+    expect(result).toEqual(cachedJobs);
+    expect(getDatabase).toHaveBeenCalled();
+    expect(listLocalJobs).toHaveBeenCalledWith(expect.anything(), userId);
+    expect(apiGet).not.toHaveBeenCalled();
+    expect(replaceServerSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("returns an empty array when SQLite has no cached jobs", async () => {
+    vi.mocked(listLocalJobs).mockResolvedValue([]);
+
+    const result = await getLocalJobs();
+
+    expect(result).toEqual([]);
+    expect(apiGet).not.toHaveBeenCalled();
   });
 });

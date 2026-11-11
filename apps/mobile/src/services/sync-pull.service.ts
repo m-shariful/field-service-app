@@ -1,5 +1,6 @@
 import { apiGet } from "@/api/client";
 import { getDatabase } from "@/db/database";
+import { runSqliteDiagnostic } from "@/db/sqlite-diagnostics";
 
 import type { Job } from "@/features/jobs/types";
 
@@ -130,35 +131,37 @@ export async function pullJobChanges(
      *
      * Re-applying the same server snapshot is safe.
      */
-    await db.withTransactionAsync(async () => {
-      for (const job of page.items) {
-        const appliedJob = await applyServerJobFromPull(
-          db,
-          userId,
-          job as ServerJob,
-        );
-
-        /**
-         * The server deleted a job that still has local changes.
-         *
-         * Mark its active outbox entries as conflicted in the same
-         * transaction as the tombstone and sync cursor updates.
-         */
-        if (job.deletedAt != null && appliedJob.syncStatus === "conflict") {
-          await markEntityMutationsConflict(
+    await runSqliteDiagnostic("sync.pull.apply-page", () =>
+      db.withTransactionAsync(async () => {
+        for (const job of page.items) {
+          const appliedJob = await applyServerJobFromPull(
             db,
             userId,
-            "job",
-            job.id,
-            "SERVER_JOB_DELETED",
+            job as ServerJob,
           );
+
+          /**
+           * The server deleted a job that still has local changes.
+           *
+           * Mark its active outbox entries as conflicted in the same
+           * transaction as the tombstone and sync cursor updates.
+           */
+          if (job.deletedAt != null && appliedJob.syncStatus === "conflict") {
+            await markEntityMutationsConflict(
+              db,
+              userId,
+              "job",
+              job.id,
+              "SERVER_JOB_DELETED",
+            );
+          }
+
+          jobsApplied += 1;
         }
 
-        jobsApplied += 1;
-      }
-
-      await saveSyncCursor(db, userId, "job", page.nextCursor);
-    });
+        await saveSyncCursor(db, userId, "job", page.nextCursor);
+      }),
+    );
 
     cursor = page.nextCursor;
 

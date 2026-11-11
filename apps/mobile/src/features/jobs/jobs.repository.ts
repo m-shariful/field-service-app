@@ -20,6 +20,7 @@ import type { Job, JobPriority } from "./types";
 
 import { ApiError } from "@/api/api-error";
 import { getDatabase } from "@/db/database";
+import { runSqliteDiagnostic } from "@/db/sqlite-diagnostics";
 import type { LocalJob } from "@/db/types";
 import { useAuthStore } from "@/stores/auth.store";
 
@@ -111,7 +112,9 @@ async function cacheServerJobs(userId: string, jobs: Job[]): Promise<void> {
   try {
     const db = await getDatabase();
 
-    await replaceServerSnapshot(db, userId, jobs);
+    await runSqliteDiagnostic("jobs.replace-server-snapshot", () =>
+      replaceServerSnapshot(db, userId, jobs),
+    );
   } catch (error) {
     console.warn("Failed to update local jobs cache:", error);
   }
@@ -250,6 +253,21 @@ async function updateLocalJobStatusOffline(
   });
 
   return updatedJob! as Job;
+}
+
+/**
+ * Reads the current user's jobs from SQLite only.
+ *
+ * This function never makes a network request and never writes
+ * to the local database.
+ */
+export async function getLocalJobs(): Promise<Job[]> {
+  const userId = getCurrentUserId();
+  const db = await getDatabase();
+
+  const jobs = await listLocalJobs(db, userId);
+
+  return jobs as Job[];
 }
 
 export async function getJobs(): Promise<Job[]> {

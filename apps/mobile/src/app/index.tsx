@@ -1,7 +1,7 @@
 import type { Job, JobStatus } from "@/features/jobs/types";
 import { refreshSyncQueueSummary, syncNow } from "@/services/sync.service";
 import { router, useFocusEffect } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
   FlatList,
@@ -14,10 +14,11 @@ import {
 
 import { JobCard } from "@/features/jobs/JobCard";
 import { JobCardSkeleton } from "@/features/jobs/JobCardSkeleton";
-import { getJobs } from "@/features/jobs/jobs.repository";
+import { getLocalJobs } from "@/features/jobs/jobs.repository";
 import { SyncStatusCard } from "@/features/sync/SyncStatusCard";
 import { triggerBackgroundSyncForTesting } from "@/services/background-sync.service";
 import { useAuthStore } from "@/stores/auth.store";
+import { useSyncStore } from "@/stores/sync.store";
 import { colors } from "@/theme/colors";
 import { spacing } from "@/theme/spacing";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -54,10 +55,11 @@ export default function JobsScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const lastRunMetrics = useSyncStore((state) => state.lastRunMetrics);
 
   const reloadJobsFromLocal = useCallback(async () => {
     try {
-      const data = await getJobs();
+      const data = await getLocalJobs();
       setJobs(data);
       setError(null);
     } catch {
@@ -71,30 +73,43 @@ export default function JobsScreen() {
     try {
       if (refresh) {
         setIsRefreshing(true);
-
-        try {
-          await syncNow();
-        } catch (syncError) {
-          // Keep fetching the job list even if sync cannot finish.
-          console.warn("Pull-to-refresh sync failed:", syncError);
-        }
       } else {
         setIsLoading(true);
       }
 
       setError(null);
 
-      const data = await getJobs();
+      /**
+       * Push pending local mutations and pull remote changes.
+       *
+       * If the API is unavailable, keep displaying the
+       * locally persisted jobs instead of losing the screen data.
+       */
+      try {
+        await syncNow();
+      } catch (syncError) {
+        console.warn("Jobs screen synchronization failed:", syncError);
+      }
+
+      const data = await getLocalJobs();
       setJobs(data);
     } catch {
       setError("Failed to fetch jobs. Please try again later.");
     } finally {
       void refreshSyncQueueSummary();
-
       setIsLoading(false);
       setIsRefreshing(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (!lastRunMetrics) {
+      return;
+    }
+
+    // Refresh the visible list after automatic synchronization completes.
+    void reloadJobsFromLocal();
+  }, [lastRunMetrics, reloadJobsFromLocal]);
 
   useFocusEffect(
     useCallback(() => {

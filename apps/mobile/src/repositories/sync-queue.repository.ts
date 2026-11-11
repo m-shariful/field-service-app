@@ -5,6 +5,7 @@ import type {
   SyncQueueRow,
 } from "@/db/types";
 
+import { runSqliteDiagnostic } from "@/db/sqlite-diagnostics";
 import type { SQLiteDatabase } from "expo-sqlite";
 
 function generateId(prefix: string): string {
@@ -245,9 +246,10 @@ export async function claimNextDueMutation(
 
   let claimedMutation: SyncQueueItem | null = null;
 
-  await db.withExclusiveTransactionAsync(async (transaction) => {
-    const row = await transaction.getFirstAsync<SyncQueueRow>(
-      `
+  await runSqliteDiagnostic("sync.queue.claim-next-due", () =>
+    db.withExclusiveTransactionAsync(async (transaction) => {
+      const row = await transaction.getFirstAsync<SyncQueueRow>(
+        `
         SELECT
           id,
           user_id,
@@ -281,16 +283,16 @@ export async function claimNextDueMutation(
         ORDER BY created_at ASC, id ASC
         LIMIT 1
       `,
-      userId,
-      nowIso,
-    );
+        userId,
+        nowIso,
+      );
 
-    if (!row) {
-      return;
-    }
+      if (!row) {
+        return;
+      }
 
-    const updateResult = await transaction.runAsync(
-      `
+      const updateResult = await transaction.runAsync(
+        `
         UPDATE sync_queue
         SET
           status = 'syncing',
@@ -301,24 +303,25 @@ export async function claimNextDueMutation(
           AND user_id = ?
           AND status IN ('pending', 'retry')
       `,
-      nowIso,
-      nowIso,
-      row.id,
-      userId,
-    );
+        nowIso,
+        nowIso,
+        row.id,
+        userId,
+      );
 
-    if (updateResult.changes !== 1) {
-      return;
-    }
+      if (updateResult.changes !== 1) {
+        return;
+      }
 
-    claimedMutation = mapRowToSyncQueueItem({
-      ...row,
-      status: "syncing",
-      attempt_count: row.attempt_count + 1,
-      last_attempt_at: nowIso,
-      updated_at: nowIso,
-    });
-  });
+      claimedMutation = mapRowToSyncQueueItem({
+        ...row,
+        status: "syncing",
+        attempt_count: row.attempt_count + 1,
+        last_attempt_at: nowIso,
+        updated_at: nowIso,
+      });
+    }),
+  );
 
   return claimedMutation;
 }
