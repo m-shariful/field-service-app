@@ -749,14 +749,17 @@ export async function acknowledgeServerJob(
     return upsertServerJob(db, userId, job);
   }
 
-  /**
-   * There is another local mutation waiting behind the one
-   * that was just acknowledged.
-   *
-   * Keep the user's final local state visible while recording
-   * the newest known server version.
-   */
+  // Never silently resolve an existing conflict here.
+  if (existing.syncStatus === "conflict") {
+    return existing;
+  }
+
   if (hasPendingMutations) {
+    const nextSyncStatus: SyncStatus =
+      existing.syncStatus === "pending_create"
+        ? "pending_create"
+        : "pending_update";
+
     await db.runAsync(
       `
         UPDATE jobs
@@ -764,13 +767,14 @@ export async function acknowledgeServerJob(
           created_at = ?,
           server_updated_at = ?,
           server_version = ?,
-          sync_status = 'pending_update'
+          sync_status = ?
         WHERE id = ?
           AND user_id = ?
       `,
       job.createdAt,
       job.updatedAt,
       job.version,
+      nextSyncStatus,
       job.id,
       userId,
     );
@@ -784,12 +788,54 @@ export async function acknowledgeServerJob(
     return updated;
   }
 
-  /**
-   * No local mutations remain.
-   *
-   * Server is now authoritative.
-   */
-  return upsertServerJob(db, userId, job);
+  // No mutations remain: persist the authoritative server state.
+  const acknowledgedJob = mapServerJobToLocalJob(job, userId);
+
+  const result = await db.runAsync(
+    `
+      UPDATE jobs
+      SET
+        title = ?,
+        scheduled_at = ?,
+        location = ?,
+        status = ?,
+        priority = ?,
+        created_at = ?,
+        updated_at = ?,
+        server_updated_at = ?,
+        server_version = ?,
+        local_updated_at = ?,
+        sync_status = 'synced',
+        deleted_at = ?
+      WHERE id = ?
+        AND user_id = ?
+    `,
+    acknowledgedJob.title,
+    acknowledgedJob.scheduledAt,
+    acknowledgedJob.location,
+    acknowledgedJob.status,
+    acknowledgedJob.priority,
+    acknowledgedJob.createdAt,
+    acknowledgedJob.updatedAt,
+    acknowledgedJob.serverUpdatedAt,
+    acknowledgedJob.version,
+    acknowledgedJob.localUpdatedAt,
+    acknowledgedJob.deletedAt,
+    job.id,
+    userId,
+  );
+
+  if (result.changes !== 1) {
+    throw new Error("LOCAL_JOB_ACKNOWLEDGEMENT_FAILED");
+  }
+
+  const updated = await getLocalJob(db, userId, job.id);
+
+  if (!updated) {
+    throw new Error("LOCAL_JOB_ACKNOWLEDGEMENT_FAILED");
+  }
+
+  return updated;
 }
 
 export async function markLocalJobConflict(
