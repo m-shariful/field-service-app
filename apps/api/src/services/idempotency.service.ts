@@ -124,7 +124,7 @@ export async function executeIdempotently(options: {
       },
     },
     {
-      new: true,
+      returnDocument: "after", // Mongoose v7+ uses returnDocument instead of "new: true"
       upsert: true,
     },
   );
@@ -179,7 +179,7 @@ export async function executeIdempotently(options: {
             },
           },
           {
-            new: true,
+            returnDocument: "after", // Mongoose v7+ uses returnDocument instead of "new: true"
           },
         )) ?? record;
     }

@@ -1,13 +1,13 @@
 import { createHash, randomBytes, randomUUID } from "crypto";
 
-import { AuthIdentityModel } from "../models/auth-identity";
-import type { AuthUser } from "../types/auth";
+import bcrypt from "bcryptjs";
 import { OAuth2Client } from "google-auth-library";
+import jwt from "jsonwebtoken";
+import { AuthIdentityModel } from "../models/auth-identity";
 import { RefreshSessionModel } from "../models/refresh-session";
 import { UserModel } from "../models/user";
+import type { AuthUser } from "../types/auth";
 import { authDebug } from "../utils/auth-debug";
-import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
 
 function getJwtSecret(): string {
   const secret = process.env.JWT_SECRET;
@@ -513,7 +513,7 @@ export async function refreshSession(refreshToken: string) {
       },
     },
     {
-      new: true,
+      returnDocument: "after", // Mongoose v7+ uses returnDocument instead of "new: true"
     },
   );
 

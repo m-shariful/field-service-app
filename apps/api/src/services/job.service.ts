@@ -162,7 +162,7 @@ export async function updateJobStatus(
       },
     },
     {
-      new: true,
+      returnDocument: "after", // Mongoose v7+ uses returnDocument instead of "new: true"
       runValidators: true,
     },
   ).lean<Job>();
@@ -230,7 +230,7 @@ export async function deleteJob(
       },
     },
     {
-      new: true,
+      returnDocument: "after", // Mongoose v7+ uses returnDocument instead of "new: true"
       runValidators: true,
     },
   ).lean<Job>();

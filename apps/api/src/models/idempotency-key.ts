@@ -69,7 +69,7 @@ const idempotencyKeySchema = new Schema<IdempotencyKey>(
     expiresAt: {
       type: Date,
       required: true,
-      index: true,
+      // index: true,
     },
   },
   {
