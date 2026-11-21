@@ -121,4 +121,43 @@ describe("NotificationModel", () => {
 
     expect(first.id).not.toBe(second.id);
   });
+
+  it("creates a notification with pending delivery state", async () => {
+    const id = crypto.randomUUID();
+
+    await NotificationModel.create({
+      id,
+      userId: "user-1",
+      type: "JOB_STATUS_CHANGED",
+      title: "Job updated",
+      body: "Your job status has changed.",
+    });
+
+    const notification = await NotificationModel.findOne({ id })
+      .select("+deliveryStatus +deliveryAttempts +nextDeliveryAt")
+      .lean();
+
+    expect(notification?.deliveryStatus).toBe("pending");
+    expect(notification?.deliveryAttempts).toBe(0);
+    expect(notification?.nextDeliveryAt).toBeInstanceOf(Date);
+  });
+
+  it("does not expose internal delivery fields in normal queries", async () => {
+    const id = crypto.randomUUID();
+
+    await NotificationModel.create({
+      id,
+      userId: "user-1",
+      type: "JOB_REMINDER",
+      title: "Upcoming job",
+      body: "Your job is scheduled soon.",
+    });
+
+    const notification = await NotificationModel.findOne({ id }).lean();
+
+    expect(notification).not.toHaveProperty("deliveryStatus");
+    expect(notification).not.toHaveProperty("deliveryAttempts");
+    expect(notification).not.toHaveProperty("dispatchLeaseToken");
+    expect(notification).not.toHaveProperty("processingLeaseToken");
+  });
 });
