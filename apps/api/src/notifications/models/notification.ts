@@ -9,6 +9,7 @@ export type NotificationDeliveryStatus =
   | "pending"
   | "queued"
   | "processing"
+  | "accepted"
   | "delivered"
   | "failed"
   | "skipped";
@@ -35,6 +36,10 @@ export interface Notification {
   nextDeliveryAt: Date;
   lastDeliveryAttemptAt?: Date | null;
   deliveredAt?: Date | null;
+
+  acceptedAt?: Date | null;
+  providerTicketIds?: string[];
+
   lastDeliveryError?: string | null;
 
   // Dispatcher lease: prevents concurrent dispatch claims.
@@ -142,6 +147,18 @@ const notificationSchema = new Schema<Notification>(
     deliveredAt: {
       type: Date,
       default: null,
+      select: false,
+    },
+
+    acceptedAt: {
+      type: Date,
+      default: null,
+      select: false,
+    },
+
+    providerTicketIds: {
+      type: [String],
+      default: [],
       select: false,
     },
 

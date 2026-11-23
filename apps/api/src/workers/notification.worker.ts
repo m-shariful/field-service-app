@@ -16,6 +16,7 @@ export function createNotificationWorker(
         max: 10,
         duration: 1_000,
       },
+      lockDuration: 60_000, // 60 seconds
     },
   );
 
