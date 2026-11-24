@@ -1,5 +1,13 @@
 import {
+  IdempotencyInProgressError,
+  IdempotencyKeyReuseError,
+  executeIdempotently,
+} from "../services/idempotency.service";
+import {
+  JobDeletedError,
+  JobVersionConflictError,
   createJob,
+  deleteJob,
   getJobById,
   getJobs,
   updateJobStatus,
@@ -7,14 +15,48 @@ import {
 import { sendError, sendSuccess } from "../utils/api-response";
 import {
   validateCreateJobInput,
+  validateDeleteJobInput,
   validateUpdateJobStatusInput,
 } from "../validators/job.validator";
 
 import type { Response } from "express";
+import { pullJobChanges } from "../services/job-sync.service";
 import type { AuthenticatedRequest } from "../types/auth";
+import { decodeJobSyncCursor } from "../utils/sync-cursor";
 
 function getAuthenticatedUserId(req: AuthenticatedRequest): string | undefined {
   return req.user?.id;
+}
+
+function getIdempotencyKey(req: AuthenticatedRequest): string | undefined {
+  const value = req.header("Idempotency-Key");
+
+  return value?.trim() || undefined;
+}
+
+function handleIdempotencyError(
+  res: Response,
+  error: unknown,
+): Response | null {
+  if (error instanceof IdempotencyKeyReuseError) {
+    return sendError(
+      res,
+      "IDEMPOTENCY_KEY_REUSED",
+      "The same idempotency key was used with different request data",
+      409,
+    );
+  }
+
+  if (error instanceof IdempotencyInProgressError) {
+    return sendError(
+      res,
+      "IDEMPOTENCY_REQUEST_IN_PROGRESS",
+      "The same mutation is currently being processed",
+      409,
+    );
+  }
+
+  return null;
 }
 
 export async function listJobs(req: AuthenticatedRequest, res: Response) {
@@ -71,9 +113,44 @@ export async function createJobController(
     );
   }
 
-  const job = await createJob(userId, validation.data);
+  try {
+    const result = await executeIdempotently({
+      userId,
+      key: getIdempotencyKey(req),
+      scope: "jobs:create",
+      requestPayload: validation.data,
 
-  return sendSuccess(res, job, 201);
+      execute: async () => {
+        const job = await createJob(userId, validation.data!);
+
+        return {
+          statusCode: 201,
+          body: {
+            data: job,
+          },
+        };
+      },
+    });
+
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    const idempotencyResponse = handleIdempotencyError(res, error);
+
+    if (idempotencyResponse) {
+      return idempotencyResponse;
+    }
+
+    if (error instanceof Error && error.message === "JOB_ID_ALREADY_EXISTS") {
+      return sendError(
+        res,
+        "JOB_ID_ALREADY_EXISTS",
+        "The supplied job id is already in use",
+        409,
+      );
+    }
+
+    throw error;
+  }
 }
 
 export async function updateJobStatusController(
@@ -104,22 +181,254 @@ export async function updateJobStatusController(
     );
   }
 
-  let job;
+  try {
+    const result = await executeIdempotently({
+      userId,
+      key: getIdempotencyKey(req),
+      scope: `jobs:update-status:${id}`,
+      requestPayload: validation.data,
+
+      execute: async () => {
+        let job: Awaited<ReturnType<typeof updateJobStatus>>;
+
+        try {
+          const { status, baseVersion } = validation.data!;
+
+          job = await updateJobStatus(id, userId, status, baseVersion);
+        } catch (error) {
+          if (error instanceof JobDeletedError) {
+            return {
+              statusCode: 409,
+              body: {
+                error: {
+                  code: "JOB_ALREADY_DELETED",
+                  message: "This job has already been deleted.",
+                },
+              },
+            };
+          }
+
+          if (error instanceof JobVersionConflictError) {
+            return {
+              statusCode: 409,
+              body: {
+                error: {
+                  code: "JOB_VERSION_CONFLICT",
+                  message:
+                    "This job was changed on the server. Refresh and resolve the conflict before retrying.",
+                  details: {
+                    expectedVersion: String(error.expectedVersion),
+                    currentVersion: String(error.currentVersion),
+                  },
+                },
+              },
+            };
+          }
+
+          return {
+            statusCode: 400,
+            body: {
+              error: {
+                code: "INVALID_STATUS_TRANSITION",
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : "Invalid job status transition",
+              },
+            },
+          };
+        }
+
+        if (!job) {
+          return {
+            statusCode: 404,
+            body: {
+              error: {
+                code: "JOB_NOT_FOUND",
+                message: "Job not found",
+              },
+            },
+          };
+        }
+
+        return {
+          statusCode: 200,
+          body: {
+            data: job,
+          },
+        };
+      },
+    });
+
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    const idempotencyResponse = handleIdempotencyError(res, error);
+
+    if (idempotencyResponse) {
+      return idempotencyResponse;
+    }
+
+    throw error;
+  }
+}
+
+export async function syncJobs(req: AuthenticatedRequest, res: Response) {
+  const userId = getAuthenticatedUserId(req);
+
+  if (!userId) {
+    return sendError(res, "UNAUTHORIZED", "Authentication required", 401);
+  }
+
+  const rawCursor = req.query.cursor;
+
+  let cursor: string | undefined;
+
+  if (typeof rawCursor === "string") {
+    cursor = rawCursor;
+  } else if (rawCursor !== undefined) {
+    return sendError(res, "INVALID_SYNC_CURSOR", "Invalid sync cursor", 400);
+  }
+
+  let limit: number | undefined;
+
+  const rawLimit = req.query.limit;
+
+  if (rawLimit !== undefined) {
+    if (typeof rawLimit !== "string") {
+      return sendError(res, "INVALID_SYNC_LIMIT", "Invalid sync limit", 400);
+    }
+
+    const parsedLimit = Number(rawLimit);
+
+    if (
+      !Number.isInteger(parsedLimit) ||
+      parsedLimit < 1 ||
+      parsedLimit > 100
+    ) {
+      return sendError(
+        res,
+        "INVALID_SYNC_LIMIT",
+        "Sync limit must be between 1 and 100",
+        400,
+      );
+    }
+
+    limit = parsedLimit;
+  }
 
   try {
-    job = await updateJobStatus(id, userId, validation.data.status);
+    /**
+     * Decode here as well so malformed cursors fail
+     * at the HTTP boundary rather than becoming
+     * database query errors.
+     */
+    if (cursor) {
+      decodeJobSyncCursor(cursor);
+    }
+
+    const result = await pullJobChanges(userId, {
+      cursor,
+      limit,
+    });
+
+    return sendSuccess(res, result);
   } catch (error) {
+    if (error instanceof Error && error.message === "INVALID_SYNC_CURSOR") {
+      return sendError(res, "INVALID_SYNC_CURSOR", "Invalid sync cursor", 400);
+    }
+
+    throw error;
+  }
+}
+
+export async function deleteJobController(
+  req: AuthenticatedRequest,
+  res: Response,
+) {
+  const userId = getAuthenticatedUserId(req);
+
+  if (!userId) {
+    return sendError(res, "UNAUTHORIZED", "Authentication required", 401);
+  }
+
+  const { id } = req.params;
+
+  if (typeof id !== "string") {
+    return sendError(res, "INVALID_JOB_ID", "Invalid job id", 400);
+  }
+
+  const validation = validateDeleteJobInput(req.body);
+
+  if (!validation.success || !validation.data) {
     return sendError(
       res,
-      "INVALID_STATUS_TRANSITION",
-      error instanceof Error ? error.message : "Invalid job status transition",
+      "VALIDATION_ERROR",
+      "Invalid delete request",
       400,
+      validation.errors,
     );
   }
 
-  if (!job) {
-    return sendError(res, "JOB_NOT_FOUND", "Job not found", 404);
-  }
+  try {
+    const result = await executeIdempotently({
+      userId,
+      key: getIdempotencyKey(req),
+      scope: `jobs:delete:${id}`,
+      requestPayload: validation.data,
 
-  return sendSuccess(res, job);
+      execute: async () => {
+        try {
+          const job = await deleteJob(id, userId, validation.data!.baseVersion);
+
+          if (!job) {
+            return {
+              statusCode: 404,
+              body: {
+                error: {
+                  code: "JOB_NOT_FOUND",
+                  message: "Job not found",
+                },
+              },
+            };
+          }
+
+          return {
+            statusCode: 200,
+            body: {
+              data: job,
+            },
+          };
+        } catch (error) {
+          if (error instanceof JobVersionConflictError) {
+            return {
+              statusCode: 409,
+              body: {
+                error: {
+                  code: "JOB_VERSION_CONFLICT",
+                  message:
+                    "This job was changed on the server. Refresh before deleting it.",
+                  details: {
+                    expectedVersion: String(error.expectedVersion),
+                    currentVersion: String(error.currentVersion),
+                  },
+                },
+              },
+            };
+          }
+
+          throw error;
+        }
+      },
+    });
+
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    const idempotencyResponse = handleIdempotencyError(res, error);
+
+    if (idempotencyResponse) {
+      return idempotencyResponse;
+    }
+
+    throw error;
+  }
 }

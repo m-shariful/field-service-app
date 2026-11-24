@@ -1,4 +1,16 @@
 import {
+  getJobActionLabel,
+  getNextJobStatus,
+} from "@/features/jobs/job-status";
+import {
+  deleteJob,
+  getJobById,
+  updateJobStatus,
+} from "@/features/jobs/jobs.repository";
+import type { Job, JobStatus } from "@/features/jobs/types";
+import { router, Stack, useLocalSearchParams } from "expo-router";
+import { useCallback, useEffect, useState } from "react";
+import {
   ActivityIndicator,
   Alert,
   Pressable,
@@ -8,17 +20,14 @@ import {
   Text,
   View,
 } from "react-native";
-import type { Job, JobStatus } from "@/features/jobs/types";
-import { Stack, useLocalSearchParams } from "expo-router";
-import {
-  getJobActionLabel,
-  getNextJobStatus,
-} from "@/features/jobs/job-status";
-import { getJobById, updateJobStatus } from "@/features/jobs/jobs.repository";
-import { useCallback, useEffect, useState } from "react";
 
 import { ApiError } from "@/api/api-error";
 import { formatJobDate } from "@/features/jobs/formatters";
+import {
+  getLatestServerJobForConflict,
+  resolveJobConflict,
+  type JobConflictResolution,
+} from "@/features/jobs/job-conflict-resolution.service";
 
 export default function JobDetailsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -28,6 +37,30 @@ export default function JobDetailsScreen() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [latestServerJob, setLatestServerJob] = useState<Job | null>(null);
+  const [isResolvingConflict, setIsResolvingConflict] = useState(false);
+  const [resolutionMessage, setResolutionMessage] = useState<string | null>(
+    null,
+  );
+
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const fetchConflictServerSnapshot = useCallback(
+    async (candidate: Job): Promise<Job | null> => {
+      if (candidate.syncStatus !== "conflict") {
+        return null;
+      }
+
+      try {
+        return await getLatestServerJobForConflict(id);
+      } catch {
+        // The local conflict remains visible if the server is unreachable.
+        return null;
+      }
+    },
+    [id],
+  );
 
   const fetchJob = useCallback(async () => {
     return getJobById(id);
@@ -45,6 +78,7 @@ export default function JobDetailsScreen() {
         const data = await fetchJob();
 
         setJob(data);
+        setLatestServerJob(await fetchConflictServerSnapshot(data));
       } catch (error) {
         setError(
           error instanceof ApiError
@@ -56,19 +90,24 @@ export default function JobDetailsScreen() {
         setIsRefreshing(false);
       }
     },
-    [fetchJob],
+    [fetchJob, fetchConflictServerSnapshot],
   );
 
   useEffect(() => {
     let cancelled = false;
 
     fetchJob()
-      .then((data) => {
+      .then(async (data) => {
         if (cancelled) {
           return;
         }
 
         setJob(data);
+        const serverSnapshot = await fetchConflictServerSnapshot(data);
+
+        if (!cancelled) {
+          setLatestServerJob(serverSnapshot);
+        }
       })
       .catch((error) => {
         if (cancelled) {
@@ -92,24 +131,144 @@ export default function JobDetailsScreen() {
     return () => {
       cancelled = true;
     };
-  }, [fetchJob]);
+  }, [fetchJob, fetchConflictServerSnapshot]);
 
-  async function handleStatusUpdate(status: JobStatus) {
+  async function handleStatusUpdate(
+    status: JobStatus,
+    baseVersion: Job["version"],
+  ) {
     try {
       setIsUpdating(true);
       setError(null);
 
-      const updatedJob = await updateJobStatus(id, status);
+      const updatedJob = await updateJobStatus(id, status, baseVersion);
 
       setJob(updatedJob);
     } catch (error) {
-      setError(
-        error instanceof ApiError
-          ? error.message
-          : "Failed to update job status.",
-      );
+      if (error instanceof ApiError && error.code === "JOB_VERSION_CONFLICT") {
+        setError(
+          "This job changed on the server. Refresh the job details before trying again.",
+        );
+      } else if (
+        error instanceof Error &&
+        error.message === "JOB_SERVER_VERSION_REQUIRED"
+      ) {
+        setError(
+          "This job has not synced with the server yet. Sync it before changing its status.",
+        );
+      } else {
+        setError(
+          error instanceof ApiError
+            ? error.message
+            : "Failed to update job status.",
+        );
+      }
     } finally {
       setIsUpdating(false);
+    }
+  }
+
+  async function handleResolveConflict(resolution: JobConflictResolution) {
+    try {
+      setIsResolvingConflict(true);
+      setError(null);
+      setResolutionMessage(null);
+
+      const resolvedJob = await resolveJobConflict(id, resolution);
+
+      if (resolvedJob.deletedAt != null) {
+        Alert.alert(
+          "Conflict resolved",
+          "The server deletion has been applied. This job is no longer active.",
+          [
+            {
+              text: "OK",
+              onPress: () => router.back(),
+            },
+          ],
+        );
+
+        return;
+      }
+
+      setJob(resolvedJob);
+      setLatestServerJob(null);
+
+      setResolutionMessage(
+        resolvedJob.syncStatus === "pending_update"
+          ? "Your change is saved on this device and queued to sync."
+          : "The job now matches the latest server version.",
+      );
+    } catch (error) {
+      if (error instanceof Error && error.message === "JOB_DELETED_ON_SERVER") {
+        setError(
+          "The job was deleted on the server. Accept the server deletion to resolve this conflict.",
+        );
+      } else if (
+        error instanceof Error &&
+        error.message === "JOB_CONFLICT_CHANGE_NOT_APPLICABLE"
+      ) {
+        setError(
+          "The latest server status does not allow this change. Use the server version to resolve the conflict.",
+        );
+      } else {
+        setError(
+          error instanceof Error
+            ? error.message
+            : "Failed to resolve the job conflict.",
+        );
+      }
+    } finally {
+      setIsResolvingConflict(false);
+    }
+  }
+
+  async function handleDeleteJob() {
+    if (!job) {
+      return;
+    }
+
+    try {
+      setIsDeleting(true);
+      setError(null);
+
+      const result = await deleteJob(id, job.version);
+      const queued = result.syncStatus === "pending_delete";
+
+      Alert.alert(
+        "Job deleted",
+        queued
+          ? "The job is removed from this device and will sync when you are online."
+          : "The job deletion has been saved on the server.",
+        [
+          {
+            text: "OK",
+            onPress: () => router.back(),
+          },
+        ],
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === "JOB_HAS_PENDING_MUTATIONS"
+      ) {
+        setError(
+          "This job has pending changes. Sync or resolve those changes before deleting it.",
+        );
+      } else if (
+        error instanceof ApiError &&
+        error.code === "JOB_VERSION_CONFLICT"
+      ) {
+        setError(
+          "The job changed on the server. Refresh its details before deleting it.",
+        );
+      } else {
+        setError(
+          error instanceof Error ? error.message : "Failed to delete this job.",
+        );
+      }
+    } finally {
+      setIsDeleting(false);
     }
   }
 
@@ -149,6 +308,14 @@ export default function JobDetailsScreen() {
   const nextStatus = getNextJobStatus(job.status);
   const actionLabel = getJobActionLabel(job.status);
 
+  const canReapplyLocalChange = Boolean(
+    latestServerJob &&
+    !job.deletedAt &&
+    !latestServerJob.deletedAt &&
+    latestServerJob.status !== job.status &&
+    getNextJobStatus(latestServerJob.status) === job.status,
+  );
+
   return (
     <>
       <Stack.Screen
@@ -175,6 +342,39 @@ export default function JobDetailsScreen() {
             </View>
 
             <PriorityBadge priority={job.priority} />
+
+            {job.syncStatus === "synced" && (
+              <Pressable
+                disabled={isDeleting || isUpdating}
+                onPress={() => {
+                  Alert.alert(
+                    "Delete this job?",
+                    "This removes it from your active job list. If you are offline, the deletion will sync when the connection returns.",
+                    [
+                      {
+                        text: "Cancel",
+                        style: "cancel",
+                      },
+                      {
+                        text: "Delete job",
+                        style: "destructive",
+                        onPress: () => void handleDeleteJob(),
+                      },
+                    ],
+                  );
+                }}
+                style={[
+                  styles.deleteButton,
+                  (isDeleting || isUpdating) && styles.actionDisabled,
+                ]}
+              >
+                {isDeleting ? (
+                  <ActivityIndicator color="#B91C1C" />
+                ) : (
+                  <Text style={styles.deleteButtonText}>Delete job</Text>
+                )}
+              </Pressable>
+            )}
           </View>
 
           <View style={styles.statusCard}>
@@ -186,6 +386,104 @@ export default function JobDetailsScreen() {
 
             <StatusIndicator status={job.status} />
           </View>
+
+          {job.syncStatus === "conflict" && (
+            <View style={styles.conflictCard}>
+              <Text style={styles.conflictTitle}>
+                Changes need your decision
+              </Text>
+
+              <Text style={styles.conflictText}>
+                Your device: {formatStatus(job.status)}
+              </Text>
+
+              {job.deletedAt != null || latestServerJob?.deletedAt != null ? (
+                <>
+                  <Text style={styles.conflictText}>Server state: Deleted</Text>
+
+                  <Text style={styles.conflictText}>
+                    Server revision: {latestServerJob?.version ?? job.version}
+                  </Text>
+
+                  <Text style={styles.conflictHint}>
+                    This job was deleted on another device. Your local changes
+                    are preserved, but they cannot be uploaded to a deleted job.
+                    Accept the server deletion to resolve this conflict.
+                  </Text>
+                </>
+              ) : latestServerJob ? (
+                <>
+                  <Text style={styles.conflictText}>
+                    Latest server version:{" "}
+                    {formatStatus(latestServerJob.status)}
+                  </Text>
+
+                  <Text style={styles.conflictText}>
+                    Server revision: {latestServerJob.version}
+                  </Text>
+
+                  {job.status === latestServerJob.status ? (
+                    <Text style={styles.conflictHint}>
+                      The status already matches the server. Use the server
+                      version to clear the conflict.
+                    </Text>
+                  ) : !canReapplyLocalChange ? (
+                    <Text style={styles.conflictHint}>
+                      Your change is not a valid next transition from the latest
+                      server status.
+                    </Text>
+                  ) : (
+                    <Text style={styles.conflictHint}>
+                      You can reapply your change against the latest server
+                      revision.
+                    </Text>
+                  )}
+                </>
+              ) : (
+                <Text style={styles.conflictHint}>
+                  The latest server status could not be loaded. Check your
+                  connection and refresh before resolving this conflict.
+                </Text>
+              )}
+
+              <Pressable
+                disabled={isResolvingConflict}
+                onPress={() => handleResolveConflict("use_server")}
+                style={[
+                  styles.conflictButton,
+                  isResolvingConflict && styles.actionDisabled,
+                ]}
+              >
+                <Text style={styles.conflictButtonText}>
+                  {job.deletedAt != null || latestServerJob?.deletedAt != null
+                    ? "Accept server deletion"
+                    : "Use server version"}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                disabled={isResolvingConflict || !canReapplyLocalChange}
+                onPress={() => handleResolveConflict("keep_local")}
+                style={[
+                  styles.conflictButtonSecondary,
+                  (isResolvingConflict || !canReapplyLocalChange) &&
+                    styles.actionDisabled,
+                ]}
+              >
+                <Text style={styles.conflictButtonSecondaryText}>
+                  Retry my change
+                </Text>
+              </Pressable>
+            </View>
+          )}
+
+          {resolutionMessage && (
+            <View style={styles.resolutionMessageCard}>
+              <Text style={styles.resolutionMessageText}>
+                {resolutionMessage}
+              </Text>
+            </View>
+          )}
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Job information</Text>
@@ -206,7 +504,7 @@ export default function JobDetailsScreen() {
           )}
         </ScrollView>
 
-        {nextStatus && actionLabel && (
+        {job.syncStatus !== "conflict" && nextStatus && actionLabel && (
           <View style={styles.actionContainer}>
             <Pressable
               disabled={isUpdating}
@@ -222,7 +520,8 @@ export default function JobDetailsScreen() {
                     },
                     {
                       text: actionLabel,
-                      onPress: () => handleStatusUpdate(nextStatus),
+                      onPress: () =>
+                        handleStatusUpdate(nextStatus, job.version),
                     },
                   ],
                 );
@@ -578,5 +877,100 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 14,
     fontWeight: "700",
+  },
+
+  conflictCard: {
+    marginTop: 20,
+    padding: 18,
+    borderRadius: 16,
+    backgroundColor: "#FFF7ED",
+    borderWidth: 1,
+    borderColor: "#FDBA74",
+  },
+
+  conflictTitle: {
+    marginBottom: 12,
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#9A3412",
+  },
+
+  conflictText: {
+    marginTop: 5,
+    fontSize: 14,
+    lineHeight: 20,
+    color: "#7C2D12",
+  },
+
+  conflictHint: {
+    marginTop: 12,
+    marginBottom: 8,
+    fontSize: 13,
+    lineHeight: 19,
+    color: "#9A3412",
+  },
+
+  conflictButton: {
+    minHeight: 46,
+    marginTop: 10,
+    borderRadius: 12,
+    backgroundColor: "#9A3412",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  conflictButtonText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+
+  conflictButtonSecondary: {
+    minHeight: 46,
+    marginTop: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#C2410C",
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  conflictButtonSecondaryText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#9A3412",
+  },
+
+  resolutionMessageCard: {
+    marginTop: 16,
+    padding: 14,
+    borderRadius: 12,
+    backgroundColor: "#F0FDF4",
+    borderWidth: 1,
+    borderColor: "#BBF7D0",
+  },
+
+  resolutionMessageText: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: "#166534",
+  },
+
+  deleteButton: {
+    minHeight: 46,
+    marginTop: 20,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#FCA5A5",
+    backgroundColor: "#FEF2F2",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  deleteButtonText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#B91C1C",
   },
 });

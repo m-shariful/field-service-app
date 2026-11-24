@@ -2,6 +2,7 @@ import cors from "cors";
 import express from "express";
 import { setupSwagger } from "./config/swagger";
 import { errorHandler } from "./middleware/error-handler";
+import notificationRoutes from "./notifications/routes/notification.routes";
 import authRoutes from "./routes/auth.routes";
 import jobRoutes from "./routes/job.routes";
 
@@ -20,6 +21,8 @@ app.get("/health", (_req, res) => {
 
 app.use("/api/auth", authRoutes);
 app.use("/api/jobs", jobRoutes);
+app.use("/api/notifications", notificationRoutes);
+
 app.use(errorHandler);
 
 export default app;

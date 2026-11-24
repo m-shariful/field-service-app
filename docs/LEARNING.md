@@ -1,102 +1,144 @@
-# Learning Progress
+# Engineering Learning Progress
 
-## React Native
+This document tracks engineering concepts explored through implementation.
 
-- [ ] React Native fundamentals
-- [ ] Core components
-- [ ] Styling
-- [ ] Platform differences
-- [ ] Lists and virtualization
-- [ ] Navigation
-- [ ] App lifecycle
-- [ ] Performance optimization
-- [ ] Debugging
+It is not intended to represent mastery based only on exposure. A topic should be marked complete only after implementation and meaningful verification.
 
-## Expo
+## 1. Mobile Engineering
 
-- [ ] Expo fundamentals
-- [x] Expo Router / navigation
+### React Native
+
+- [x] Expo application foundation
+- [x] Expo Router navigation
+- [x] Component-based UI
+- [ ] Advanced list performance
+- [ ] Accessibility
+- [ ] Platform-specific optimization
+- [ ] Native debugging
+- [ ] Performance profiling
+
+### Expo
+
+- [x] Expo development workflow
 - [x] Development builds
-- [ ] Native capabilities
-- [ ] Permissions
+- [x] SecureStore integration
+- [x] SQLite integration
+- [x] Background task registration
 - [ ] EAS Build
 - [ ] EAS Submit
-- [x] Platform-specific storage handling
+- [ ] Production deployment
 
-## Authentication
+### State and Persistence
 
-- [x] Email/password authentication
-- [x] bcrypt password hashing
+- [x] Zustand
+- [x] Repository pattern
+- [x] SQLite persistence
+- [x] Transactional operations
+- [x] Local mutation queue
+- [x] Synchronization metadata
+
+## 2. Authentication and Security
+
+- [x] Password hashing
 - [x] JWT access tokens
 - [x] Opaque refresh tokens
+- [x] Token hashing
 - [x] Refresh-token rotation
-- [x] Refresh-session families
+- [x] Session families
+- [x] Reuse detection
 - [x] Idle timeout
 - [x] Absolute timeout
-- [x] Refresh-token reuse detection
 - [x] Logout revocation
 - [x] Google ID-token verification
-- [x] Account-link-required handling
-- [x] Mobile session restoration
-- [x] Automatic token refresh after 401
-- [x] Single-flight refresh mutex
-- [x] Debug-log secret redaction
-- [ ] Browser HttpOnly refresh-cookie architecture
+- [x] Account-linking boundaries
+- [x] Secure mobile session storage
+- [x] Single-flight token refresh
 - [ ] Rate limiting
 - [ ] Password recovery
+- [ ] Advanced session-management UX
+- [ ] Security audit
 
-## Mobile Capabilities
+## 3. Backend Engineering
 
-- [ ] GPS / location
-- [ ] Camera
-- [ ] Sensors
-- [ ] Network state
-- [ ] Device storage
-- [ ] Notifications
-
-## Offline-First
-
-- [ ] Local SQLite database
-- [ ] Repository pattern
-- [ ] Offline UI
-- [ ] Operation queue
-- [ ] Retry strategy
-- [ ] Idempotency
-- [ ] Synchronization
-- [ ] Conflict resolution
-
-## Backend
-
-- [x] REST API
-- [x] Authentication
-- [x] Authorization
+- [x] Express architecture
+- [x] REST API design
+- [x] TypeScript
 - [x] MongoDB
-- [ ] Redis
-- [x] API validation
+- [x] Mongoose
+- [x] Request validation
 - [x] Error handling
-- [x] OpenAPI / Swagger
+- [x] Ownership authorization
+- [x] OpenAPI documentation
+- [x] Integration testing
 
-## DevOps
+## 4. Distributed Systems and Offline Engineering
 
-- [x] GitHub
-- [ ] GitHub CI
+- [x] Durable local mutations
+- [x] Idempotency
+- [x] Cursor-based synchronization
+- [x] Transactional checkpoint updates
+- [x] Version-aware updates
+- [x] Conflict detection
+- [x] Conflict resolution
+- [x] Retry handling
+- [x] Background synchronization
+- [ ] Advanced synchronization observability
+- [ ] Multi-device stress testing
+
+## 5. Background Processing
+
+- [x] Redis configuration
+- [x] BullMQ queue infrastructure
+- [x] Separate dispatcher process
+- [x] Delivery-processing workflow
+- [x] Processing leases
+- [x] Retry and failure handling
+- [ ] Push-provider integration
+- [ ] Provider receipt reconciliation
+- [ ] Invalid token cleanup
+- [ ] Production worker monitoring
+
+## 6. Testing and Quality
+
+- [x] Vitest
+- [x] Supertest
+- [x] MongoDB Memory Server
+- [x] Backend type checking
+- [x] API integration tests
+- [ ] Mobile automated test coverage
+- [ ] End-to-end mobile testing
+- [ ] Load testing
+- [ ] Security testing
+
+## 7. DevOps and Production Readiness
+
+- [x] Git and GitHub
+- [x] Docker-based Redis development
+- [ ] GitHub Actions CI
 - [ ] Mobile CI/CD
-- [ ] EAS Build
-- [ ] Android deployment
-- [ ] iOS deployment
-- [ ] Environment management
-
-## Production Engineering
-
-- [x] Structured authentication failure paths
-- [x] Debug logging with credential redaction
-- [x] Authentication tests
-- [x] Type checking
-- [x] Build verification
-- [x] Linting
-- [ ] Logging / observability in production
+- [ ] Production deployment
+- [ ] Centralized logs
 - [ ] Error tracking
 - [ ] Performance monitoring
-- [ ] Rate limiting
-- [ ] Session-management UI
-- [ ] Automated stale-session cleanup
+- [ ] Backup and recovery
+
+## 8. Field Device Capabilities
+
+- [ ] GPS and location
+- [ ] Geospatial workflows
+- [ ] Camera
+- [ ] Inspection attachments
+- [ ] Sensors
+- [ ] Background location
+- [ ] Device permission handling
+
+## Learning Principle
+
+For every major topic:
+
+1. Understand the underlying problem.
+2. Study the engineering concepts.
+3. Implement a working solution.
+4. Test normal and failure scenarios.
+5. Explain the design and trade-offs.
+6. Document the decision and limitations.

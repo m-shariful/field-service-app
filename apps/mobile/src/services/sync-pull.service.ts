@@ -1,0 +1,183 @@
+import { apiGet } from "@/api/client";
+import { getDatabase } from "@/db/database";
+import { runSqliteDiagnostic } from "@/db/sqlite-diagnostics";
+
+import type { Job } from "@/features/jobs/types";
+
+import {
+  applyServerJobFromPull,
+  type ServerJob,
+} from "@/repositories/local-jobs.repository";
+import { markEntityMutationsConflict } from "@/repositories/sync-queue.repository";
+
+import {
+  getSyncState,
+  saveSyncCursor,
+} from "@/repositories/sync-state.repository";
+
+import { useAuthStore } from "@/stores/auth.store";
+import { throwIfAborted } from "@/utils/abort";
+
+interface JobSyncResponse {
+  data: {
+    items: Job[];
+
+    nextCursor: string | null;
+
+    hasMore: boolean;
+  };
+}
+
+const PAGE_SIZE = 50;
+
+const MAX_PAGES_PER_RUN = 20;
+
+function getCurrentUserId(): string | null {
+  return useAuthStore.getState().user?.id ?? null;
+}
+
+export interface PullSyncResult {
+  pages: number;
+  jobsApplied: number;
+
+  cursor: string | null;
+
+  hasMore: boolean;
+}
+
+export async function pullJobChanges(
+  signal?: AbortSignal,
+): Promise<PullSyncResult> {
+  const authState = useAuthStore.getState();
+
+  if (
+    !authState.user ||
+    !authState.isAuthenticated ||
+    authState.sessionMode !== "online"
+  ) {
+    return {
+      pages: 0,
+      jobsApplied: 0,
+      cursor: null,
+      hasMore: false,
+    };
+  }
+
+  const userId = getCurrentUserId();
+
+  if (!userId) {
+    return {
+      pages: 0,
+      jobsApplied: 0,
+      cursor: null,
+      hasMore: false,
+    };
+  }
+
+  const db = await getDatabase();
+
+  const syncState = await getSyncState(db, userId, "job");
+
+  let cursor = syncState?.cursor ?? null;
+
+  let pages = 0;
+  let jobsApplied = 0;
+
+  let hasMore = true;
+
+  while (hasMore && pages < MAX_PAGES_PER_RUN) {
+    throwIfAborted(signal);
+
+    const query = new URLSearchParams();
+
+    query.set("limit", String(PAGE_SIZE));
+
+    if (cursor) {
+      query.set("cursor", cursor);
+    }
+
+    const response = await apiGet<JobSyncResponse>(
+      `/api/jobs/sync?${query.toString()}`,
+      { signal },
+    );
+
+    const page = response.data;
+
+    console.log("[Sync Pull]", {
+      requestedCursor: cursor,
+      receivedCount: page.items.length,
+      receivedJobs: page.items.map((job) => ({
+        id: job.id,
+        status: job.status,
+        updatedAt: job.updatedAt,
+        version: job.version,
+      })),
+      nextCursor: page.nextCursor,
+      hasMore: page.hasMore,
+    });
+
+    /**
+     * IMPORTANT:
+     *
+     * Apply jobs + save cursor in ONE SQLite
+     * transaction.
+     *
+     * If the process crashes halfway through:
+     *
+     * transaction rolls back
+     * cursor does not advance
+     *
+     * so the same server changes are fetched again.
+     *
+     * Re-applying the same server snapshot is safe.
+     */
+    await runSqliteDiagnostic("sync.pull.apply-page", () =>
+      db.withTransactionAsync(async () => {
+        for (const job of page.items) {
+          const appliedJob = await applyServerJobFromPull(
+            db,
+            userId,
+            job as ServerJob,
+          );
+
+          /**
+           * The server deleted a job that still has local changes.
+           *
+           * Mark its active outbox entries as conflicted in the same
+           * transaction as the tombstone and sync cursor updates.
+           */
+          if (job.deletedAt != null && appliedJob.syncStatus === "conflict") {
+            await markEntityMutationsConflict(
+              db,
+              userId,
+              "job",
+              job.id,
+              "SERVER_JOB_DELETED",
+            );
+          }
+
+          jobsApplied += 1;
+        }
+
+        await saveSyncCursor(db, userId, "job", page.nextCursor);
+      }),
+    );
+
+    cursor = page.nextCursor;
+
+    hasMore = page.hasMore;
+
+    pages += 1;
+
+    if (!page.hasMore) {
+      break;
+    }
+  }
+
+  return {
+    pages,
+    jobsApplied,
+    cursor,
+    hasMore,
+  };
+}

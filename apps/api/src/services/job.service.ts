@@ -2,8 +2,25 @@ import { Job, JobModel, JobPriority, JobStatus } from "../models/job";
 
 import { transitionJobStatus } from "./job-status.service";
 
+export class JobVersionConflictError extends Error {
+  constructor(
+    public readonly expectedVersion: number,
+    public readonly currentVersion: number,
+  ) {
+    super("JOB_VERSION_CONFLICT");
+    this.name = "JobVersionConflictError";
+  }
+}
+
+export class JobDeletedError extends Error {
+  constructor() {
+    super("JOB_ALREADY_DELETED");
+    this.name = "JobDeletedError";
+  }
+}
+
 export async function getJobs(userId: string): Promise<Job[]> {
-  return await JobModel.find({ userId }).lean<Job[]>();
+  return await JobModel.find({ userId, deletedAt: null }).lean<Job[]>();
 }
 
 export async function getJobById(
@@ -14,6 +31,7 @@ export async function getJobById(
     (await JobModel.findOne({
       id,
       userId,
+      deletedAt: null,
     }).lean<Job>()) || undefined
   );
 }
@@ -21,14 +39,51 @@ export async function getJobById(
 export async function createJob(
   userId: string,
   input: {
+    id?: string;
     title: string;
     scheduledAt: string;
     location: string;
     priority: JobPriority;
   },
 ): Promise<Job> {
+  const jobId = input.id ?? `job-${Date.now()}`;
+
+  /**
+   * A client-created offline job carries its stable local id.
+   *
+   * This gives us an additional layer of protection:
+   * even if the idempotency record is lost during a crash,
+   * retrying the same create request cannot create another
+   * copy of the same local mutation.
+   */
+  if (input.id) {
+    const existingJob = await JobModel.findOne({
+      id: jobId,
+    });
+
+    if (existingJob) {
+      if (existingJob.userId !== userId) {
+        throw new Error("JOB_ID_ALREADY_EXISTS");
+      }
+
+      const sameRequest =
+        existingJob.deletedAt === null &&
+        existingJob.title === input.title &&
+        existingJob.scheduledAt === input.scheduledAt &&
+        existingJob.location === input.location &&
+        existingJob.priority === input.priority &&
+        existingJob.status === "scheduled";
+
+      if (sameRequest) {
+        return existingJob.toObject();
+      }
+
+      throw new Error("JOB_ID_ALREADY_EXISTS");
+    }
+  }
+
   const job = await JobModel.create({
-    id: `job-${Date.now()}`,
+    id: jobId,
     userId,
     title: input.title,
     scheduledAt: input.scheduledAt,
@@ -44,32 +99,204 @@ export async function updateJobStatus(
   id: string,
   userId: string,
   newStatus: JobStatus,
+  baseVersion: number,
 ): Promise<Job | undefined> {
-  const job = await getJobById(id, userId);
+  const currentJob = await JobModel.findOne({
+    id,
+    userId,
+  }).lean<Job>();
 
-  if (!job) {
+  if (!currentJob) {
     return undefined;
   }
 
-  const nextStatus = transitionJobStatus(job.status, newStatus);
+  /**
+   * A deleted job cannot be updated.
+   */
+  if (currentJob.deletedAt != null) {
+    throw new JobDeletedError();
+  }
 
+  /**
+   * Step 1: Check the revision the client edited.
+   */
+  if (currentJob.version !== baseVersion) {
+    throw new JobVersionConflictError(baseVersion, currentJob.version);
+  }
+
+  /**
+   * Repeating the same state while still on the expected
+   * revision is a no-op. It does not create a new version.
+   */
+  if (currentJob.status === newStatus) {
+    return currentJob;
+  }
+
+  /**
+   * Step 2: Enforce the existing business state machine.
+   */
+  const nextStatus = transitionJobStatus(currentJob.status, newStatus);
+
+  /**
+   * Step 3: Compare-and-set.
+   *
+   * The update succeeds only if the document still has
+   * the version we inspected above.
+   *
+   * This second check prevents a concurrent request from
+   * slipping between our read and write.
+   */
   const updatedJob = await JobModel.findOneAndUpdate(
     {
       id,
       userId,
+      version: baseVersion,
+      deletedAt: null,
     },
     {
       $set: {
         status: nextStatus,
       },
+      $inc: {
+        version: 1,
+      },
     },
     {
-      new: true,
+      returnDocument: "after", // Mongoose v7+ uses returnDocument instead of "new: true"
+      runValidators: true,
     },
   ).lean<Job>();
 
-  return updatedJob || undefined;
+  if (updatedJob) {
+    return updatedJob;
+  }
+
+  /**
+   * Another writer won the race after our initial read.
+   */
+  const latestJob = await JobModel.findOne({
+    id,
+    userId,
+    deletedAt: null,
+  }).lean<Job>();
+
+  if (!latestJob) {
+    return undefined;
+  }
+
+  if (latestJob.deletedAt != null) {
+    throw new JobDeletedError();
+  }
+
+  throw new JobVersionConflictError(baseVersion, latestJob.version);
 }
+
+export async function deleteJob(
+  id: string,
+  userId: string,
+  baseVersion: number,
+): Promise<Job | undefined> {
+  const currentJob = await JobModel.findOne({
+    id,
+    userId,
+  }).lean<Job>();
+
+  if (!currentJob) {
+    return undefined;
+  }
+
+  // Deleting a tombstone again is a successful no-op.
+  if (currentJob.deletedAt != null) {
+    return currentJob;
+  }
+
+  if (currentJob.version !== baseVersion) {
+    throw new JobVersionConflictError(baseVersion, currentJob.version);
+  }
+
+  const deletedJob = await JobModel.findOneAndUpdate(
+    {
+      id,
+      userId,
+      version: baseVersion,
+      deletedAt: null,
+    },
+    {
+      $set: {
+        deletedAt: new Date(),
+      },
+      $inc: {
+        version: 1,
+      },
+    },
+    {
+      returnDocument: "after", // Mongoose v7+ uses returnDocument instead of "new: true"
+      runValidators: true,
+    },
+  ).lean<Job>();
+
+  if (deletedJob) {
+    return deletedJob;
+  }
+
+  // Another request may have changed or deleted this job
+  // after our first read.
+  const latestJob = await JobModel.findOne({
+    id,
+    userId,
+  }).lean<Job>();
+
+  if (!latestJob) {
+    return undefined;
+  }
+
+  if (latestJob.deletedAt != null) {
+    return latestJob;
+  }
+
+  throw new JobVersionConflictError(baseVersion, latestJob.version);
+}
+
+// export async function updateJobStatus(
+//   id: string,
+//   userId: string,
+//   newStatus: JobStatus,
+// ): Promise<Job | undefined> {
+//   const job = await getJobById(id, userId);
+
+//   if (!job) {
+//     return undefined;
+//   }
+
+//   /**
+//    * Setting the same state twice is intentionally idempotent.
+//    *
+//    * This is important when the mobile app retries a mutation
+//    * after the server processed it but the response was lost.
+//    */
+//   if (job.status === newStatus) {
+//     return job;
+//   }
+
+//   const nextStatus = transitionJobStatus(job.status, newStatus);
+
+//   const updatedJob = await JobModel.findOneAndUpdate(
+//     {
+//       id,
+//       userId,
+//     },
+//     {
+//       $set: {
+//         status: nextStatus,
+//       },
+//     },
+//     {
+//       new: true,
+//     },
+//   ).lean<Job>();
+
+//   return updatedJob || undefined;
+// }
 
 /**
  * STATIC DATA

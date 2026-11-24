@@ -3,6 +3,7 @@ import type { JobPriority, JobStatus } from "../models/job";
 const JOB_PRIORITIES = ["low", "medium", "high", "urgent"] as const;
 
 interface CreateJobInput {
+  id?: string;
   title: string;
   scheduledAt: string;
   location: string;
@@ -31,6 +32,14 @@ export function validateCreateJobInput(input: unknown): ValidationResult {
 
   // Learning: Validate at the HTTP boundary before data reaches
   // the service/database layer.
+  if (body.id !== undefined) {
+    if (typeof body.id !== "string" || !body.id.trim()) {
+      errors.id = "Job id must be a non-empty string";
+    } else if (body.id.trim().length > 150) {
+      errors.id = "Job id must be 150 characters or fewer";
+    }
+  }
+
   if (typeof body.title !== "string" || !body.title.trim()) {
     errors.title = "Title is required";
   } else if (body.title.trim().length > 200) {
@@ -67,6 +76,7 @@ export function validateCreateJobInput(input: unknown): ValidationResult {
     success: true,
     errors: {},
     data: {
+      ...(typeof body.id === "string" ? { id: body.id.trim() } : {}),
       title: (body.title as string).trim(),
       scheduledAt: body.scheduledAt as string,
       location: (body.location as string).trim(),
@@ -79,6 +89,7 @@ const JOB_STATUSES = ["scheduled", "in_progress", "completed"] as const;
 
 interface UpdateJobStatusInput {
   status: JobStatus;
+  baseVersion: number;
 }
 
 export function validateUpdateJobStatusInput(input: unknown): {
@@ -88,7 +99,7 @@ export function validateUpdateJobStatusInput(input: unknown): {
 } {
   const errors: Record<string, string> = {};
 
-  if (!input || typeof input !== "object") {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
     return {
       success: false,
       errors: {
@@ -108,6 +119,14 @@ export function validateUpdateJobStatusInput(input: unknown): {
     errors.status = "Status must be scheduled, in_progress, or completed";
   }
 
+  if (
+    typeof body.baseVersion !== "number" ||
+    !Number.isInteger(body.baseVersion) ||
+    body.baseVersion < 1
+  ) {
+    errors.baseVersion = "baseVersion must be a positive integer";
+  }
+
   if (Object.keys(errors).length > 0) {
     return {
       success: false,
@@ -120,6 +139,48 @@ export function validateUpdateJobStatusInput(input: unknown): {
     errors: {},
     data: {
       status: body.status as JobStatus,
+      baseVersion: body.baseVersion as number,
+    },
+  };
+}
+
+export function validateDeleteJobInput(input: unknown): {
+  success: boolean;
+  errors: Record<string, string>;
+  data?: { baseVersion: number };
+} {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return {
+      success: false,
+      errors: {
+        body: "Request body must be an object",
+      },
+    };
+  }
+
+  const body = input as Record<string, unknown>;
+  const errors: Record<string, string> = {};
+
+  if (
+    typeof body.baseVersion !== "number" ||
+    !Number.isInteger(body.baseVersion) ||
+    body.baseVersion < 1
+  ) {
+    errors.baseVersion = "baseVersion must be a positive integer";
+  }
+
+  if (Object.keys(errors).length > 0) {
+    return {
+      success: false,
+      errors,
+    };
+  }
+
+  return {
+    success: true,
+    errors: {},
+    data: {
+      baseVersion: body.baseVersion as number,
     },
   };
 }

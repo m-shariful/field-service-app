@@ -305,6 +305,7 @@ describe("PATCH /api/jobs/:id/status", () => {
       .patch("/api/jobs/job-status-001/status")
       .send({
         status: "in_progress",
+        baseVersion: 1,
       })
       .set("Authorization", `Bearer ${accesstoken}`);
 
@@ -341,6 +342,7 @@ describe("PATCH /api/jobs/:id/status", () => {
       .patch("/api/jobs/job-status-002/status")
       .send({
         status: "completed",
+        baseVersion: 1,
       })
       .set("Authorization", `Bearer ${accesstoken}`);
 
@@ -361,6 +363,7 @@ describe("PATCH /api/jobs/:id/status", () => {
       .patch("/api/jobs/job-status-003/status")
       .send({
         status: "cancelled",
+        baseVersion: 1,
       })
       .set("Authorization", `Bearer ${accesstoken}`);
 
@@ -396,6 +399,7 @@ describe("PATCH /api/jobs/:id/status", () => {
       .patch("/api/jobs/job-status-004/status")
       .send({
         status: "completed",
+        baseVersion: 1,
       })
       .set("Authorization", `Bearer ${accesstoken}`);
 
@@ -417,6 +421,7 @@ describe("PATCH /api/jobs/:id/status", () => {
       .patch("/api/jobs/job-does-not-exist/status")
       .send({
         status: "in_progress",
+        baseVersion: 1,
       })
       .set("Authorization", `Bearer ${accesstoken}`);
 
@@ -428,6 +433,65 @@ describe("PATCH /api/jobs/:id/status", () => {
         message: "Job not found",
       },
     });
+  });
+
+  // stale-version tests
+  it("returns 409 when the client submits a stale baseVersion", async () => {
+    const { user, accesstoken } = await createTestUser(
+      "Stale Version User",
+      "stale-version@example.com",
+    );
+
+    await JobModel.create({
+      id: "job-version-stale-001",
+      userId: user.id,
+      title: "Stale Version Test",
+      scheduledAt: "2026-10-10T10:00:00.000Z",
+      location: "Rajshahi",
+      status: "scheduled",
+      priority: "medium",
+    });
+
+    // First update: version 1 -> version 2.
+    const firstResponse = await request(app)
+      .patch("/api/jobs/job-version-stale-001/status")
+      .set("Authorization", `Bearer ${accesstoken}`)
+      .send({
+        status: "in_progress",
+        baseVersion: 1,
+      });
+
+    expect(firstResponse.status).toBe(200);
+    expect(firstResponse.body.data.version).toBe(2);
+
+    // This request still claims it edited version 1.
+    const staleResponse = await request(app)
+      .patch("/api/jobs/job-version-stale-001/status")
+      .set("Authorization", `Bearer ${accesstoken}`)
+      .send({
+        status: "completed",
+        baseVersion: 1,
+      });
+
+    expect(staleResponse.status).toBe(409);
+
+    expect(staleResponse.body).toMatchObject({
+      error: {
+        code: "JOB_VERSION_CONFLICT",
+        details: {
+          expectedVersion: "1",
+          currentVersion: "2",
+        },
+      },
+    });
+
+    // The rejected request must not overwrite the job.
+    const savedJob = await JobModel.findOne({
+      id: "job-version-stale-001",
+    }).lean();
+
+    expect(savedJob?.status).toBe("in_progress");
+    expect(savedJob?.version).toBe(2);
   });
 
   // malformed-body tests
@@ -449,6 +513,7 @@ describe("PATCH /api/jobs/:id/status", () => {
         message: "Invalid job data",
         details: {
           status: "Status must be scheduled, in_progress, or completed",
+          baseVersion: "baseVersion must be a positive integer",
         },
       },
     });

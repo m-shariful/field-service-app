@@ -5,8 +5,9 @@ import {
   saveSessionTokens,
 } from "@/storage/auth-storage";
 
-import { ApiError } from "./api-error";
 import { authDebug } from "@/debug/auth-debug";
+import { throwIfAborted } from "@/utils/abort";
+import { ApiError } from "./api-error";
 
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL;
 
@@ -254,9 +255,15 @@ async function refreshAccessToken(): Promise<RefreshResult> {
   return refreshPromise;
 }
 
+interface ApiRequestOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 interface AuthenticatedRequestOptions extends RequestInit {
   authRequired?: boolean;
   allowRefresh?: boolean;
+  signal?: AbortSignal;
 }
 
 async function request<T>(
@@ -287,6 +294,8 @@ async function request<T>(
     authenticated: authRequired,
     retryEnabled: allowRefresh,
   });
+
+  throwIfAborted(fetchOptions.signal);
 
   let response: Response;
 
@@ -325,6 +334,8 @@ async function request<T>(
       code: apiError.code,
       canRefresh: allowRefresh,
     });
+
+    throwIfAborted(fetchOptions.signal);
 
     if (allowRefresh) {
       const refreshResult = await refreshAccessToken();
@@ -379,23 +390,52 @@ async function request<T>(
   throw apiError;
 }
 
-export async function apiGet<T>(path: string): Promise<T> {
+export async function apiGet<T>(
+  path: string,
+  options: ApiRequestOptions = {},
+): Promise<T> {
   return request<T>(path, {
     method: "GET",
+    signal: options.signal,
   });
 }
 
-export async function apiPost<T>(path: string, body: unknown): Promise<T> {
+export async function apiPost<T>(
+  path: string,
+  body: unknown,
+  options: ApiRequestOptions = {},
+): Promise<T> {
   return request<T>(path, {
     method: "POST",
     body: JSON.stringify(body),
+    headers: options.headers,
+    signal: options.signal,
   });
 }
 
-export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
+export async function apiPatch<T>(
+  path: string,
+  body: unknown,
+  options: ApiRequestOptions = {},
+): Promise<T> {
   return request<T>(path, {
     method: "PATCH",
     body: JSON.stringify(body),
+    headers: options.headers,
+    signal: options.signal,
+  });
+}
+
+export async function apiDelete<T>(
+  path: string,
+  body: unknown,
+  options: ApiRequestOptions = {},
+): Promise<T> {
+  return request<T>(path, {
+    method: "DELETE",
+    body: JSON.stringify(body),
+    headers: options.headers,
+    signal: options.signal,
   });
 }
 

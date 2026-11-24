@@ -10,6 +10,10 @@ export default defineConfig({
     include: ["src/**/*.test.ts"],
     exclude: ["dist/**", "node_modules/**"],
 
+    // Shared MongoDB test environment is not safe for
+    // concurrent test-file execution.
+    fileParallelism: false,
+
     setupFiles: ["./src/__tests__/setup.ts"], // Tells Vitest to run the setup file before tests
   },
 });

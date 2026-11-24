@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "seed": "tsx src/scripts/seed-jobs.ts"
+    "seed": "tsx src/scripts/seed-jobs.ts",
+    "dispatcher": "tsx src/dispatcher.ts",
+    "dispatcher:dev": "tsx watch src/dispatcher.ts"
   },
   "keywords": [],
   "author": "",
@@ -18,10 +20,12 @@
   "type": "commonjs",
   "dependencies": {
     "bcryptjs": "^3.0.3",
+    "bullmq": "^6.7.8",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "google-auth-library": "^11.0.2",
+    "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.3",
     "mongodb": "^7.6.0",
     "mongoose": "^9.9.4",

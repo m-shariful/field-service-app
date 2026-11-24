@@ -1,7 +1,9 @@
 import {
   createJobController,
+  deleteJobController,
   getJob,
   listJobs,
+  syncJobs,
   updateJobStatusController,
 } from "../controllers/job.controller";
 
@@ -14,8 +16,13 @@ const router = Router();
 router.use(requireAuth);
 
 router.get("/", listJobs);
+
+// sync jobs endpoint is used by the Sync Engine to pull changes from the server.
+router.get("/sync", syncJobs);
+
 router.post("/", createJobController);
 router.get("/:id", getJob);
 router.patch("/:id/status", updateJobStatusController);
+router.delete("/:id", deleteJobController);
 
 export default router;

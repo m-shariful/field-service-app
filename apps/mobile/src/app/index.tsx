@@ -1,7 +1,9 @@
 import type { Job, JobStatus } from "@/features/jobs/types";
+import { refreshSyncQueueSummary, syncNow } from "@/services/sync.service";
 import { router, useFocusEffect } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Alert,
   FlatList,
   Pressable,
   RefreshControl,
@@ -12,8 +14,11 @@ import {
 
 import { JobCard } from "@/features/jobs/JobCard";
 import { JobCardSkeleton } from "@/features/jobs/JobCardSkeleton";
-import { getJobs } from "@/features/jobs/jobs.repository";
+import { getLocalJobs } from "@/features/jobs/jobs.repository";
+import { SyncStatusCard } from "@/features/sync/SyncStatusCard";
+import { triggerBackgroundSyncForTesting } from "@/services/background-sync.service";
 import { useAuthStore } from "@/stores/auth.store";
+import { useSyncStore } from "@/stores/sync.store";
 import { colors } from "@/theme/colors";
 import { spacing } from "@/theme/spacing";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -50,6 +55,19 @@ export default function JobsScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const lastRunMetrics = useSyncStore((state) => state.lastRunMetrics);
+
+  const reloadJobsFromLocal = useCallback(async () => {
+    try {
+      const data = await getLocalJobs();
+      setJobs(data);
+      setError(null);
+    } catch {
+      setError("Failed to refresh jobs. Please try again later.");
+    } finally {
+      void refreshSyncQueueSummary();
+    }
+  }, []);
 
   const fetchJobs = useCallback(async (refresh = false) => {
     try {
@@ -61,19 +79,63 @@ export default function JobsScreen() {
 
       setError(null);
 
-      const data = await getJobs();
+      /**
+       * Push pending local mutations and pull remote changes.
+       *
+       * If the API is unavailable, keep displaying the
+       * locally persisted jobs instead of losing the screen data.
+       */
+      try {
+        await syncNow();
+      } catch (syncError) {
+        console.warn("Jobs screen synchronization failed:", syncError);
+      }
+
+      const data = await getLocalJobs();
       setJobs(data);
     } catch {
       setError("Failed to fetch jobs. Please try again later.");
     } finally {
+      void refreshSyncQueueSummary();
       setIsLoading(false);
       setIsRefreshing(false);
     }
   }, []);
 
+  useEffect(() => {
+    if (!lastRunMetrics) {
+      return;
+    }
+
+    // Refresh the visible list after automatic synchronization completes.
+    void reloadJobsFromLocal();
+  }, [lastRunMetrics, reloadJobsFromLocal]);
+
   useFocusEffect(
     useCallback(() => {
-      fetchJobs();
+      let cancelled = false;
+
+      console.log("[Sync Diagnostics]", {
+        timestamp: new Date().toISOString(),
+        trigger: "jobs-screen-focus",
+      });
+
+      const loadJobs = async () => {
+        if (!cancelled) {
+          await fetchJobs();
+        }
+      };
+
+      void loadJobs();
+
+      return () => {
+        cancelled = true;
+
+        console.log("[Sync Diagnostics]", {
+          timestamp: new Date().toISOString(),
+          trigger: "jobs-screen-blur",
+        });
+      };
     }, [fetchJobs]),
   );
 
@@ -93,6 +155,24 @@ export default function JobsScreen() {
       completed: jobs.filter((job) => job.status === "completed").length,
     };
   }, [jobs]);
+
+  const handleBackgroundSyncTest = useCallback(async () => {
+    try {
+      const triggered = await triggerBackgroundSyncForTesting();
+
+      Alert.alert(
+        "Background Sync Test",
+        triggered
+          ? "The background task trigger was accepted. Check the device logs."
+          : "The background task trigger was not accepted.",
+      );
+    } catch (error) {
+      Alert.alert(
+        "Background Sync Test Failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }, []);
 
   if (isLoading) {
     return (
@@ -176,6 +256,19 @@ export default function JobsScreen() {
             >
               <Text style={styles.createJobButtonText}>+ Create Job</Text>
             </Pressable>
+
+            <SyncStatusCard onSyncFinished={reloadJobsFromLocal} />
+
+            {__DEV__ && (
+              <Pressable
+                onPress={handleBackgroundSyncTest}
+                style={styles.backgroundTestButton}
+              >
+                <Text style={styles.backgroundTestButtonText}>
+                  Test Background Sync
+                </Text>
+              </Pressable>
+            )}
 
             <View style={styles.summaryRow}>
               <SummaryCard
@@ -481,5 +574,22 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
     color: colors.text.secondary,
+  },
+
+  backgroundTestButton: {
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: spacing.lg,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.surface,
+  },
+
+  backgroundTestButtonText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: colors.primary,
   },
 });

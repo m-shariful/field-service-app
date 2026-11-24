@@ -1,0 +1,977 @@
+import type {
+  JobPriority,
+  JobStatus,
+  LocalJob,
+  LocalJobRow,
+  SyncStatus,
+} from "../db/types";
+
+import type { SQLiteDatabase } from "expo-sqlite";
+
+export interface ServerJob {
+  id: string;
+  userId: string;
+
+  title: string;
+  scheduledAt: string;
+  location: string;
+
+  status: JobStatus;
+  priority: JobPriority;
+
+  createdAt: string;
+  updatedAt: string;
+
+  version: number | null;
+  deletedAt?: string | null;
+}
+
+function mapRowToLocalJob(row: LocalJobRow): LocalJob {
+  return {
+    id: row.id,
+    userId: row.user_id,
+
+    title: row.title,
+    scheduledAt: row.scheduled_at,
+    location: row.location,
+
+    status: row.status,
+    priority: row.priority,
+
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+
+    serverUpdatedAt: row.server_updated_at,
+    localUpdatedAt: row.local_updated_at,
+
+    syncStatus: row.sync_status,
+
+    deletedAt: row.deleted_at,
+
+    version: row.server_version,
+  };
+}
+
+function mapServerJobToLocalJob(
+  job: ServerJob,
+  userId: string,
+  localUpdatedAt = new Date().toISOString(),
+): LocalJob {
+  /**
+   * Critical security invariant:
+   *
+   * A server job must belong to the currently authenticated user
+   * before we persist it locally.
+   */
+  if (job.userId !== userId) {
+    throw new Error("Cannot persist a job belonging to another user");
+  }
+
+  return {
+    id: job.id,
+    userId,
+
+    title: job.title,
+    scheduledAt: job.scheduledAt,
+    location: job.location,
+
+    status: job.status,
+    priority: job.priority,
+
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+
+    serverUpdatedAt: job.updatedAt,
+    localUpdatedAt,
+
+    syncStatus: "synced",
+
+    deletedAt: job.deletedAt ?? null,
+
+    version: job.version,
+  };
+}
+
+async function getExistingJobRow(
+  db: SQLiteDatabase,
+  jobId: string,
+): Promise<LocalJobRow | null> {
+  return db.getFirstAsync<LocalJobRow>(
+    `
+      SELECT
+        id,
+        user_id,
+        title,
+        scheduled_at,
+        location,
+        status,
+        priority,
+        created_at,
+        updated_at,
+        server_updated_at,
+        server_version,
+        local_updated_at,
+        sync_status,
+        deleted_at
+      FROM jobs
+      WHERE id = ?
+      LIMIT 1
+    `,
+    jobId,
+  );
+}
+
+export async function upsertServerJob(
+  db: SQLiteDatabase,
+  userId: string,
+  job: ServerJob,
+): Promise<LocalJob> {
+  const localJob = mapServerJobToLocalJob(job, userId);
+
+  const existing = await getExistingJobRow(db, job.id);
+
+  /**
+   * Defense-in-depth against local cross-user ID collisions.
+   */
+  if (existing && existing.user_id !== userId) {
+    throw new Error("LOCAL_JOB_ID_BELONGS_TO_ANOTHER_USER");
+  }
+
+  /**
+   * Do not allow fresh server reads to overwrite
+   * local unsynchronized work.
+   */
+  if (existing && existing.sync_status !== "synced") {
+    return mapRowToLocalJob(existing);
+  }
+
+  await db.runAsync(
+    `
+      INSERT INTO jobs (
+        id,
+        user_id,
+        title,
+        scheduled_at,
+        location,
+        status,
+        priority,
+        created_at,
+        updated_at,
+        server_updated_at,
+        server_version,
+        local_updated_at,
+        sync_status,
+        deleted_at
+      )
+      VALUES (
+        ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?
+      )
+      ON CONFLICT(id)
+      DO UPDATE SET
+        user_id = excluded.user_id,
+        title = excluded.title,
+        scheduled_at = excluded.scheduled_at,
+        location = excluded.location,
+        status = excluded.status,
+        priority = excluded.priority,
+        created_at = excluded.created_at,
+        updated_at = excluded.updated_at,
+        server_updated_at = excluded.server_updated_at,
+        server_version = excluded.server_version,
+        local_updated_at = excluded.local_updated_at,
+        sync_status = excluded.sync_status,
+        deleted_at = excluded.deleted_at
+      WHERE jobs.user_id = excluded.user_id
+    `,
+    localJob.id,
+    localJob.userId,
+
+    localJob.title,
+    localJob.scheduledAt,
+    localJob.location,
+
+    localJob.status,
+    localJob.priority,
+
+    localJob.createdAt,
+    localJob.updatedAt,
+
+    localJob.serverUpdatedAt,
+    localJob.version,
+    localJob.localUpdatedAt,
+
+    localJob.syncStatus,
+
+    localJob.deletedAt,
+  );
+
+  return localJob;
+}
+
+// Current upsertServerJob() protects pending local mutations,
+// but pull synchronization also needs to remember the latest server version even when local changes are pending.
+export async function applyServerJobFromPull(
+  db: SQLiteDatabase,
+  userId: string,
+  job: ServerJob,
+): Promise<LocalJob> {
+  if (job.userId !== userId) {
+    throw new Error("Cannot persist a job belonging to another user");
+  }
+
+  const existing = await getExistingJobRow(db, job.id);
+
+  if (existing && existing.user_id !== userId) {
+    throw new Error("LOCAL_JOB_ID_BELONGS_TO_ANOTHER_USER");
+  }
+
+  if (!existing) {
+    return upsertServerJob(db, userId, job);
+  }
+
+  /**
+   * A replayed, older server revision must not replace
+   * a newer local record or erase a newer tombstone.
+   */
+  if (
+    typeof job.version === "number" &&
+    typeof existing.server_version === "number" &&
+    job.version < existing.server_version
+  ) {
+    return mapRowToLocalJob(existing);
+  }
+
+  /**
+   * Both sides deleted the same job.
+   *
+   * The remote deletion already satisfies the local intent.
+   * A queued delete can still be retried safely; the server
+   * delete endpoint treats an existing tombstone as a no-op.
+   */
+  if (job.deletedAt != null && existing.sync_status === "pending_delete") {
+    return acknowledgeServerDeletedJob(db, userId, job);
+  }
+
+  if (existing.sync_status !== "synced") {
+    /**
+     * Remote deletion conflicts with some other local work.
+     *
+     * Keep the local business fields unchanged, save the
+     * remote revision and tombstone, and mark the job conflicted.
+     * The conflict must remain visible until a user resolves it.
+     */
+    if (job.deletedAt != null) {
+      const result = await db.runAsync(
+        `
+          UPDATE jobs
+          SET
+            server_updated_at = ?,
+            server_version = ?,
+            deleted_at = ?,
+            sync_status = 'conflict'
+          WHERE id = ?
+            AND user_id = ?
+        `,
+        job.updatedAt,
+        job.version,
+        job.deletedAt,
+        job.id,
+        userId,
+      );
+
+      if (result.changes !== 1) {
+        throw new Error("LOCAL_JOB_TOMBSTONE_CONFLICT_FAILED");
+      }
+
+      const conflictedJob = await getLocalJobIncludingDeleted(
+        db,
+        userId,
+        job.id,
+      );
+
+      if (!conflictedJob) {
+        throw new Error("LOCAL_JOB_TOMBSTONE_CONFLICT_FAILED");
+      }
+
+      return conflictedJob;
+    }
+
+    /**
+     * For a normal, non-deleted server revision:
+     * keep pending local fields and just record the latest
+     * server revision. A stale mutation will be rejected by
+     * the server's optimistic concurrency check when pushed.
+     */
+    await db.runAsync(
+      `
+        UPDATE jobs
+        SET
+          server_updated_at = ?,
+          server_version = ?
+        WHERE id = ?
+          AND user_id = ?
+      `,
+      job.updatedAt,
+      job.version,
+      job.id,
+      userId,
+    );
+
+    /**
+     * pending_delete rows are hidden from normal reads.
+     * Read them through the inclusive lookup so that a pull
+     * does not fail just because the user queued a deletion.
+     */
+    const updated =
+      existing.deleted_at !== null
+        ? await getLocalJobIncludingDeleted(db, userId, job.id)
+        : await getLocalJob(db, userId, job.id);
+
+    if (!updated) {
+      throw new Error("LOCAL_JOB_PULL_APPLY_FAILED");
+    }
+
+    return updated;
+  }
+
+  /**
+   * No unsynchronized local work remains.
+   * The server record, including its tombstone, is authoritative.
+   */
+  return upsertServerJob(db, userId, job);
+}
+
+export async function insertLocalJob(
+  db: SQLiteDatabase,
+  userId: string,
+  job: LocalJob,
+): Promise<LocalJob> {
+  if (job.userId !== userId) {
+    throw new Error("Cannot persist a job belonging to another user");
+  }
+
+  await db.runAsync(
+    `
+      INSERT INTO jobs (
+        id,
+        user_id,
+        title,
+        scheduled_at,
+        location,
+        status,
+        priority,
+        created_at,
+        updated_at,
+        server_updated_at,
+        server_version,
+        local_updated_at,
+        sync_status,
+        deleted_at
+      )
+      VALUES (
+        ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?
+      )
+    `,
+    job.id,
+    job.userId,
+    job.title,
+    job.scheduledAt,
+    job.location,
+    job.status,
+    job.priority,
+    job.createdAt,
+    job.updatedAt,
+    job.serverUpdatedAt,
+    job.version,
+    job.localUpdatedAt,
+    job.syncStatus,
+    job.deletedAt,
+  );
+
+  return job;
+}
+
+export async function updateLocalJobStatus(
+  db: SQLiteDatabase,
+  userId: string,
+  jobId: string,
+  status: JobStatus,
+  localUpdatedAt = new Date().toISOString(),
+): Promise<LocalJob> {
+  const existing = await getLocalJob(db, userId, jobId);
+
+  if (!existing) {
+    throw new Error("LOCAL_JOB_NOT_FOUND");
+  }
+
+  if (existing.syncStatus === "conflict") {
+    throw new Error("LOCAL_JOB_HAS_CONFLICT");
+  }
+
+  const nextSyncStatus: SyncStatus =
+    existing.syncStatus === "pending_create"
+      ? "pending_create"
+      : "pending_update";
+
+  await db.runAsync(
+    `
+      UPDATE jobs
+      SET
+        status = ?,
+        updated_at = ?,
+        local_updated_at = ?,
+        sync_status = ?
+      WHERE id = ?
+        AND user_id = ?
+        AND deleted_at IS NULL
+    `,
+    status,
+    localUpdatedAt,
+    localUpdatedAt,
+    nextSyncStatus,
+    jobId,
+    userId,
+  );
+
+  const updatedJob = await getLocalJob(db, userId, jobId);
+
+  if (!updatedJob) {
+    throw new Error("LOCAL_JOB_UPDATE_FAILED");
+  }
+
+  return updatedJob;
+}
+
+export async function replaceServerSnapshot(
+  db: SQLiteDatabase,
+  userId: string,
+  jobs: ServerJob[],
+): Promise<void> {
+  /**
+   * This method assumes GET /api/jobs returns the user's
+   * complete current job collection.
+   *
+   * Pending/conflict local rows are preserved.
+   */
+
+  for (const job of jobs) {
+    if (job.userId !== userId) {
+      throw new Error("Server returned a job belonging to another user");
+    }
+  }
+
+  await db.withTransactionAsync(async () => {
+    /**
+     * Only rows fully synchronized with the server may be
+     * removed from a complete server snapshot.
+     *
+     * Pending local mutations must remain untouched.
+     */
+    await db.runAsync(
+      `
+        DELETE FROM jobs
+        WHERE user_id = ?
+          AND sync_status = 'synced'
+          AND deleted_at IS NULL
+      `,
+      userId,
+    );
+
+    for (const job of jobs) {
+      await upsertServerJob(db, userId, job);
+    }
+  });
+}
+
+export async function listLocalJobs(
+  db: SQLiteDatabase,
+  userId: string,
+): Promise<LocalJob[]> {
+  const rows = await db.getAllAsync<LocalJobRow>(
+    `
+      SELECT
+        id,
+        user_id,
+        title,
+        scheduled_at,
+        location,
+        status,
+        priority,
+        created_at,
+        updated_at,
+        server_updated_at,
+        server_version,
+        local_updated_at,
+        sync_status,
+        deleted_at
+      FROM jobs
+      WHERE user_id = ?
+        AND (deleted_at IS NULL OR sync_status = 'conflict')
+      ORDER BY scheduled_at ASC
+    `,
+    userId,
+  );
+
+  return rows.map(mapRowToLocalJob);
+}
+
+export async function getLocalJob(
+  db: SQLiteDatabase,
+  userId: string,
+  jobId: string,
+): Promise<LocalJob | null> {
+  const row = await db.getFirstAsync<LocalJobRow>(
+    `
+      SELECT
+        id,
+        user_id,
+        title,
+        scheduled_at,
+        location,
+        status,
+        priority,
+        created_at,
+        updated_at,
+        server_updated_at,
+        server_version,
+        local_updated_at,
+        sync_status,
+        deleted_at
+      FROM jobs
+      WHERE id = ?
+        AND user_id = ?
+        AND (deleted_at IS NULL OR sync_status = 'conflict')
+      LIMIT 1
+    `,
+    jobId,
+    userId,
+  );
+
+  return row ? mapRowToLocalJob(row) : null;
+}
+
+/**
+ * Read a job even when it has a local tombstone.
+ * Normal screens should continue using getLocalJob().
+ */
+export async function getLocalJobIncludingDeleted(
+  db: SQLiteDatabase,
+  userId: string,
+  jobId: string,
+): Promise<LocalJob | null> {
+  const row = await getExistingJobRow(db, jobId);
+
+  if (!row) {
+    return null;
+  }
+
+  if (row.user_id !== userId) {
+    throw new Error("LOCAL_JOB_ID_BELONGS_TO_ANOTHER_USER");
+  }
+
+  return mapRowToLocalJob(row);
+}
+
+/**
+ * Hide a server-backed job immediately and mark it for upload.
+ *
+ * We require a clean local job. Pending updates must be synced
+ * first so we don't silently lose their ordering or version anchor.
+ */
+export async function markLocalJobPendingDelete(
+  db: SQLiteDatabase,
+  userId: string,
+  jobId: string,
+): Promise<LocalJob> {
+  const existing = await getLocalJob(db, userId, jobId);
+
+  if (!existing) {
+    throw new Error("LOCAL_JOB_NOT_FOUND");
+  }
+
+  if (existing.syncStatus !== "synced") {
+    throw new Error("JOB_HAS_PENDING_MUTATIONS");
+  }
+
+  if (existing.version === null) {
+    throw new Error("JOB_SERVER_VERSION_REQUIRED");
+  }
+
+  const deletedAt = new Date().toISOString();
+
+  const result = await db.runAsync(
+    `
+      UPDATE jobs
+      SET
+        deleted_at = ?,
+        local_updated_at = ?,
+        sync_status = 'pending_delete'
+      WHERE id = ?
+        AND user_id = ?
+        AND deleted_at IS NULL
+        AND sync_status = 'synced'
+    `,
+    deletedAt,
+    deletedAt,
+    jobId,
+    userId,
+  );
+
+  if (result.changes !== 1) {
+    throw new Error("LOCAL_JOB_DELETE_FAILED");
+  }
+
+  const deletedJob = await getLocalJobIncludingDeleted(db, userId, jobId);
+
+  if (!deletedJob) {
+    throw new Error("LOCAL_JOB_DELETE_FAILED");
+  }
+
+  return deletedJob;
+}
+
+/**
+ * Persist a successful server DELETE response.
+ * Acknowledgement must preserve the tombstone locally.
+ */
+export async function acknowledgeServerDeletedJob(
+  db: SQLiteDatabase,
+  userId: string,
+  job: ServerJob,
+): Promise<LocalJob> {
+  if (job.userId !== userId) {
+    throw new Error("Cannot persist a job belonging to another user");
+  }
+
+  if (!job.deletedAt) {
+    throw new Error("SERVER_DELETE_RESPONSE_MISSING_TOMBSTONE");
+  }
+
+  const existing = await getExistingJobRow(db, job.id);
+
+  if (!existing) {
+    return upsertServerJob(db, userId, job);
+  }
+
+  if (existing.user_id !== userId) {
+    throw new Error("LOCAL_JOB_ID_BELONGS_TO_ANOTHER_USER");
+  }
+
+  const result = await db.runAsync(
+    `
+      UPDATE jobs
+      SET
+        updated_at = ?,
+        server_updated_at = ?,
+        server_version = ?,
+        deleted_at = ?,
+        sync_status = 'synced'
+      WHERE id = ?
+        AND user_id = ?
+    `,
+    job.updatedAt,
+    job.updatedAt,
+    job.version,
+    job.deletedAt,
+    job.id,
+    userId,
+  );
+
+  if (result.changes !== 1) {
+    throw new Error("LOCAL_JOB_DELETE_ACKNOWLEDGEMENT_FAILED");
+  }
+
+  const acknowledged = await getLocalJobIncludingDeleted(db, userId, job.id);
+
+  if (!acknowledged) {
+    throw new Error("LOCAL_JOB_DELETE_ACKNOWLEDGEMENT_FAILED");
+  }
+
+  return acknowledged;
+}
+
+/**
+ * If the server rejects a queued delete because its baseVersion
+ * is stale, restore the job's visibility so the user can resolve it.
+ */
+export async function restoreConflictedPendingDelete(
+  db: SQLiteDatabase,
+  userId: string,
+  jobId: string,
+): Promise<void> {
+  const result = await db.runAsync(
+    `
+      UPDATE jobs
+      SET
+        deleted_at = NULL,
+        sync_status = 'conflict'
+      WHERE id = ?
+        AND user_id = ?
+        AND sync_status = 'pending_delete'
+    `,
+    jobId,
+    userId,
+  );
+
+  if (result.changes !== 1) {
+    throw new Error("LOCAL_JOB_DELETE_CONFLICT_RESTORE_FAILED");
+  }
+}
+
+export async function clearUserJobs(
+  db: SQLiteDatabase,
+  userId: string,
+): Promise<void> {
+  await db.runAsync(
+    `
+      DELETE FROM jobs
+      WHERE user_id = ?
+    `,
+    userId,
+  );
+}
+
+export async function acknowledgeServerJob(
+  db: SQLiteDatabase,
+  userId: string,
+  job: ServerJob,
+  hasPendingMutations: boolean,
+): Promise<LocalJob> {
+  if (job.userId !== userId) {
+    throw new Error("Cannot persist a job belonging to another user");
+  }
+
+  const existing = await getLocalJob(db, userId, job.id);
+
+  if (!existing) {
+    return upsertServerJob(db, userId, job);
+  }
+
+  // Never silently resolve an existing conflict here.
+  if (existing.syncStatus === "conflict") {
+    return existing;
+  }
+
+  if (hasPendingMutations) {
+    const nextSyncStatus: SyncStatus =
+      existing.syncStatus === "pending_create"
+        ? "pending_create"
+        : "pending_update";
+
+    await db.runAsync(
+      `
+        UPDATE jobs
+        SET
+          created_at = ?,
+          server_updated_at = ?,
+          server_version = ?,
+          sync_status = ?
+        WHERE id = ?
+          AND user_id = ?
+      `,
+      job.createdAt,
+      job.updatedAt,
+      job.version,
+      nextSyncStatus,
+      job.id,
+      userId,
+    );
+
+    const updated = await getLocalJob(db, userId, job.id);
+
+    if (!updated) {
+      throw new Error("LOCAL_JOB_ACKNOWLEDGEMENT_FAILED");
+    }
+
+    return updated;
+  }
+
+  // No mutations remain: persist the authoritative server state.
+  const acknowledgedJob = mapServerJobToLocalJob(job, userId);
+
+  const result = await db.runAsync(
+    `
+      UPDATE jobs
+      SET
+        title = ?,
+        scheduled_at = ?,
+        location = ?,
+        status = ?,
+        priority = ?,
+        created_at = ?,
+        updated_at = ?,
+        server_updated_at = ?,
+        server_version = ?,
+        local_updated_at = ?,
+        sync_status = 'synced',
+        deleted_at = ?
+      WHERE id = ?
+        AND user_id = ?
+    `,
+    acknowledgedJob.title,
+    acknowledgedJob.scheduledAt,
+    acknowledgedJob.location,
+    acknowledgedJob.status,
+    acknowledgedJob.priority,
+    acknowledgedJob.createdAt,
+    acknowledgedJob.updatedAt,
+    acknowledgedJob.serverUpdatedAt,
+    acknowledgedJob.version,
+    acknowledgedJob.localUpdatedAt,
+    acknowledgedJob.deletedAt,
+    job.id,
+    userId,
+  );
+
+  if (result.changes !== 1) {
+    throw new Error("LOCAL_JOB_ACKNOWLEDGEMENT_FAILED");
+  }
+
+  const updated = await getLocalJob(db, userId, job.id);
+
+  if (!updated) {
+    throw new Error("LOCAL_JOB_ACKNOWLEDGEMENT_FAILED");
+  }
+
+  return updated;
+}
+
+export async function markLocalJobConflict(
+  db: SQLiteDatabase,
+  userId: string,
+  jobId: string,
+): Promise<void> {
+  await db.runAsync(
+    `
+      UPDATE jobs
+      SET
+        sync_status = 'conflict'
+      WHERE id = ?
+        AND user_id = ?
+    `,
+    jobId,
+    userId,
+  );
+}
+
+export async function replaceConflictedLocalJobWithServer(
+  db: SQLiteDatabase,
+  userId: string,
+  job: ServerJob,
+): Promise<LocalJob> {
+  if (job.userId !== userId) {
+    throw new Error("Cannot persist a job belonging to another user");
+  }
+
+  const existing = await getLocalJob(db, userId, job.id);
+
+  if (!existing || existing.syncStatus !== "conflict") {
+    throw new Error("LOCAL_JOB_HAS_NO_CONFLICT");
+  }
+
+  const resolved = mapServerJobToLocalJob(job, userId);
+
+  const result = await db.runAsync(
+    `
+      UPDATE jobs
+      SET
+        title = ?,
+        scheduled_at = ?,
+        location = ?,
+        status = ?,
+        priority = ?,
+        created_at = ?,
+        updated_at = ?,
+        server_updated_at = ?,
+        server_version = ?,
+        local_updated_at = ?,
+        sync_status = 'synced',
+        deleted_at = NULL
+      WHERE id = ?
+        AND user_id = ?
+        AND sync_status = 'conflict'
+    `,
+    resolved.title,
+    resolved.scheduledAt,
+    resolved.location,
+    resolved.status,
+    resolved.priority,
+    resolved.createdAt,
+    resolved.updatedAt,
+    resolved.serverUpdatedAt,
+    resolved.version,
+    resolved.localUpdatedAt,
+    resolved.id,
+    userId,
+  );
+
+  if (result.changes !== 1) {
+    throw new Error("LOCAL_JOB_CONFLICT_RESOLVE_FAILED");
+  }
+
+  const updated = await getLocalJob(db, userId, job.id);
+
+  if (!updated) {
+    throw new Error("LOCAL_JOB_CONFLICT_RESOLVE_FAILED");
+  }
+
+  return updated;
+}
+
+export async function prepareConflictedLocalJobForRetry(
+  db: SQLiteDatabase,
+  userId: string,
+  job: ServerJob,
+): Promise<LocalJob> {
+  if (job.userId !== userId) {
+    throw new Error("Cannot persist a job belonging to another user");
+  }
+
+  if (
+    typeof job.version !== "number" ||
+    !Number.isInteger(job.version) ||
+    job.version < 1
+  ) {
+    throw new Error("JOB_SERVER_VERSION_REQUIRED");
+  }
+
+  const existing = await getLocalJob(db, userId, job.id);
+
+  if (!existing || existing.syncStatus !== "conflict") {
+    throw new Error("LOCAL_JOB_HAS_NO_CONFLICT");
+  }
+
+  const result = await db.runAsync(
+    `
+      UPDATE jobs
+      SET
+        server_updated_at = ?,
+        server_version = ?,
+        sync_status = 'pending_update'
+      WHERE id = ?
+        AND user_id = ?
+        AND sync_status = 'conflict'
+        AND deleted_at IS NULL
+    `,
+    job.updatedAt,
+    job.version,
+    job.id,
+    userId,
+  );
+
+  if (result.changes !== 1) {
+    throw new Error("LOCAL_JOB_CONFLICT_RETRY_PREPARATION_FAILED");
+  }
+
+  const updated = await getLocalJob(db, userId, job.id);
+
+  if (!updated) {
+    throw new Error("LOCAL_JOB_CONFLICT_RETRY_PREPARATION_FAILED");
+  }
+
+  return updated;
+}
+
+export { mapRowToLocalJob, mapServerJobToLocalJob };
