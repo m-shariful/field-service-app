@@ -12,7 +12,8 @@
     "test:watch": "vitest",
     "seed": "tsx src/scripts/seed-jobs.ts",
     "dispatcher": "tsx src/dispatcher.ts",
-    "dispatcher:dev": "tsx watch src/dispatcher.ts"
+    "dispatcher:dev": "tsx watch src/dispatcher.ts",
+    "seed:notifications": "tsx src/scripts/seed-notifications.ts"
   },
   "keywords": [],
   "author": "",

@@ -15,6 +15,7 @@ import {
 import { JobCard } from "@/features/jobs/JobCard";
 import { JobCardSkeleton } from "@/features/jobs/JobCardSkeleton";
 import { getLocalJobs } from "@/features/jobs/jobs.repository";
+import { getUnreadNotificationCount } from "@/features/notifications/notifications.service";
 import { SyncStatusCard } from "@/features/sync/SyncStatusCard";
 import { triggerBackgroundSyncForTesting } from "@/services/background-sync.service";
 import { useAuthStore } from "@/stores/auth.store";
@@ -56,6 +57,9 @@ export default function JobsScreen() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lastRunMetrics = useSyncStore((state) => state.lastRunMetrics);
+
+  // Notification
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
 
   const reloadJobsFromLocal = useCallback(async () => {
     try {
@@ -137,6 +141,26 @@ export default function JobsScreen() {
         });
       };
     }, [fetchJobs]),
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+
+      getUnreadNotificationCount()
+        .then((count) => {
+          if (active) {
+            setUnreadNotificationCount(count);
+          }
+        })
+        .catch((error) => {
+          console.warn("Could not fetch unread notification count:", error);
+        });
+
+      return () => {
+        active = false;
+      };
+    }, []),
   );
 
   const filteredJobs = useMemo(() => {
@@ -239,15 +263,39 @@ export default function JobsScreen() {
                 <Text style={styles.subtitle}>Manage your field work</Text>
               </View>
 
-              <Pressable
-                onPress={signOut}
-                style={({ pressed }) => [
-                  styles.signOutButton,
-                  pressed && styles.filterPressed,
-                ]}
-              >
-                <Text style={styles.signOutButtonText}>Sign Out</Text>
-              </Pressable>
+              <View style={styles.headerActions}>
+                <Pressable
+                  onPress={() => router.push("/notifications")}
+                  style={({ pressed }) => [
+                    styles.notificationButton,
+                    pressed && styles.filterPressed,
+                  ]}
+                >
+                  <Text style={styles.notificationButtonText}>
+                    Notifications
+                  </Text>
+
+                  {unreadNotificationCount > 0 && (
+                    <View style={styles.notificationCountBadge}>
+                      <Text style={styles.notificationCountText}>
+                        {unreadNotificationCount > 99
+                          ? "99+"
+                          : unreadNotificationCount}
+                      </Text>
+                    </View>
+                  )}
+                </Pressable>
+
+                <Pressable
+                  onPress={signOut}
+                  style={({ pressed }) => [
+                    styles.signOutButton,
+                    pressed && styles.filterPressed,
+                  ]}
+                >
+                  <Text style={styles.signOutButtonText}>Sign Out</Text>
+                </Pressable>
+              </View>
             </View>
 
             <Pressable
@@ -591,5 +639,47 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "700",
     color: colors.primary,
+  },
+
+  // notification
+  headerActions: {
+    alignItems: "flex-end",
+    gap: spacing.sm,
+    marginTop: spacing.lg,
+  },
+
+  notificationButton: {
+    minHeight: 38,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+
+  notificationButtonText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: colors.text.primary,
+  },
+
+  notificationCountBadge: {
+    minWidth: 20,
+    height: 20,
+    paddingHorizontal: 5,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.primary,
+  },
+
+  notificationCountText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: colors.text.inverse,
   },
 });
