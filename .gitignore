@@ -53,3 +53,5 @@ purpose.md
 
 # Test coverage
 coverage/
+
+/apps/mobile/google-services.json
