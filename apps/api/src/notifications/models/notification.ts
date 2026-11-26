@@ -14,6 +14,14 @@ export type NotificationDeliveryStatus =
   | "failed"
   | "skipped";
 
+export interface NotificationProviderTicket {
+  ticketId: string;
+  deviceToken: string;
+  status: "pending" | "error";
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}
+
 export interface Notification {
   id: string;
   userId: string;
@@ -39,6 +47,7 @@ export interface Notification {
 
   acceptedAt?: Date | null;
   providerTicketIds?: string[];
+  providerTickets?: NotificationProviderTicket[];
 
   lastDeliveryError?: string | null;
 
@@ -114,6 +123,7 @@ const notificationSchema = new Schema<Notification>(
         "pending",
         "queued",
         "processing",
+        "accepted",
         "delivered",
         "failed",
         "skipped",
@@ -158,6 +168,36 @@ const notificationSchema = new Schema<Notification>(
 
     providerTicketIds: {
       type: [String],
+      default: [],
+      select: false,
+    },
+
+    providerTickets: {
+      type: [
+        {
+          ticketId: {
+            type: String,
+            required: true,
+          },
+          deviceToken: {
+            type: String,
+            required: true,
+          },
+          status: {
+            type: String,
+            enum: ["pending", "error"],
+            required: true,
+          },
+          errorCode: {
+            type: String,
+            default: null,
+          },
+          errorMessage: {
+            type: String,
+            default: null,
+          },
+        },
+      ],
       default: [],
       select: false,
     },

@@ -316,6 +316,22 @@ export async function markAllNotificationsAsRead(
 }
 
 // -----------------------------------------------------------------------------
+// Device token retrieval
+// -----------------------------------------------------------------------------
+
+export async function getEnabledDeviceTokens(
+  userId: string,
+): Promise<DeviceToken[]> {
+  return DeviceTokenModel.find({
+    userId,
+    enabled: true,
+    provider: "expo",
+  })
+    .select("id userId token platform provider deviceId enabled lastSeenAt")
+    .lean<DeviceToken[]>();
+}
+
+// -----------------------------------------------------------------------------
 // Device token registration
 // -----------------------------------------------------------------------------
 

@@ -18,12 +18,19 @@ const TERMINAL_STATUSES: NotificationDeliveryStatus[] = [
 export interface NotificationDeliveryResult {
   status: "accepted" | "skipped";
   providerTicketIds?: string[];
+  providerTickets?: Array<{
+    ticketId: string;
+    deviceToken: string;
+    status: "pending" | "error";
+    errorCode?: string | null;
+    errorMessage?: string | null;
+  }>;
 }
 
 export type NotificationDeliveryHandler = (
   notification: Pick<
     Notification,
-    "id" | "userId" | "title" | "body" | "data" | "type"
+    "id" | "userId" | "title" | "body" | "data" | "type" | "jobId"
   >,
 ) => Promise<NotificationDeliveryResult>;
 
@@ -53,7 +60,7 @@ export class PermanentNotificationDeliveryError extends Error {
 
 type ClaimedNotification = Pick<
   Notification,
-  "id" | "userId" | "title" | "body" | "data" | "type"
+  "id" | "userId" | "title" | "body" | "data" | "type" | "jobId"
 > & {
   processingLeaseToken: string;
 };
@@ -107,6 +114,7 @@ async function claimNotification(
     data: notification.data,
     type: notification.type,
     processingLeaseToken: notification.processingLeaseToken!,
+    jobId: notification.jobId ?? null,
   };
 }
 
@@ -210,6 +218,7 @@ export async function processNotificationDelivery(
           acceptedAt: result.status === "accepted" ? now() : null,
           providerTicketIds: result.providerTicketIds ?? [],
           lastDeliveryError: null,
+          providerTickets: result.providerTickets ?? [],
         },
         $unset: {
           processingLeaseToken: 1,

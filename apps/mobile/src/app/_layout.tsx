@@ -1,18 +1,19 @@
 import * as Network from "expo-network";
+import * as Notifications from "expo-notifications";
 
+import { ActivityIndicator, AppState, StyleSheet, View } from "react-native";
+import { Stack, router, usePathname } from "expo-router";
 import {
   registerBackgroundSync,
   unregisterBackgroundSync,
 } from "@/services/background-sync.service";
-import { Stack, router, usePathname } from "expo-router";
-import { ActivityIndicator, AppState, StyleSheet, View } from "react-native";
+import { useEffect, useRef } from "react";
 
+import { SafeAreaProvider } from "react-native-safe-area-context";
+import { colors } from "@/theme";
 import { syncNow } from "@/services/sync.service";
 import { useAuthStore } from "@/stores/auth.store";
 import { useSyncStore } from "@/stores/sync.store";
-import { colors } from "@/theme";
-import { useEffect } from "react";
-import { SafeAreaProvider } from "react-native-safe-area-context";
 
 function logSyncTrigger(trigger: string, details?: Record<string, unknown>) {
   console.log("[Sync Diagnostics]", {
@@ -22,11 +23,22 @@ function logSyncTrigger(trigger: string, details?: Record<string, unknown>) {
   });
 }
 
+// Configure how notifications are displayed when the app is in the foreground.
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
+
 export default function RootLayout() {
   const pathname = usePathname();
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const isLoading = useAuthStore((state) => state.isLoading);
   const initializeAuth = useAuthStore((state) => state.initializeAuth);
+  const lastHandledNotificationId = useRef<string | null>(null);
 
   // Get the current session mode from the auth store
   const sessionMode = useAuthStore((state) => state.sessionMode);
@@ -210,6 +222,59 @@ export default function RootLayout() {
     void registerBackgroundSync().catch((error) => {
       console.warn("Could not register background sync:", error);
     });
+  }, [isAuthenticated, isLoading]);
+
+  useEffect(() => {
+    if (isLoading || !isAuthenticated) {
+      return;
+    }
+
+    function handleNotificationResponse(
+      response: Notifications.NotificationResponse,
+    ) {
+      const notificationId = response.notification.request.identifier;
+
+      // Prevent handling the same response twice.
+      if (lastHandledNotificationId.current === notificationId) {
+        return;
+      }
+
+      lastHandledNotificationId.current = notificationId;
+
+      const data = response.notification.request.content.data;
+      const jobId = data?.jobId;
+
+      if (typeof jobId === "string" && jobId.length > 0) {
+        router.push({
+          pathname: "/jobs/[id]",
+          params: { id: jobId },
+        });
+      } else {
+        router.push("/notifications");
+      }
+
+      void Notifications.clearLastNotificationResponseAsync();
+    }
+
+    // Handle notification taps while the app is already running.
+    const subscription = Notifications.addNotificationResponseReceivedListener(
+      handleNotificationResponse,
+    );
+
+    // Handle a notification tap that launched the app from a terminated state.
+    void Notifications.getLastNotificationResponseAsync()
+      .then((response) => {
+        if (response) {
+          handleNotificationResponse(response);
+        }
+      })
+      .catch((error) => {
+        console.warn("Could not read the last notification response:", error);
+      });
+
+    return () => {
+      subscription.remove();
+    };
   }, [isAuthenticated, isLoading]);
 
   if (isLoading) {

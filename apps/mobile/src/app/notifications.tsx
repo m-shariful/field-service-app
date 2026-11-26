@@ -16,6 +16,7 @@ import {
   View,
 } from "react-native";
 
+import { PushNotificationSetup } from "@/features/notifications/PushNotificationSetup";
 import type { Notification } from "@/features/notifications/types";
 import { colors } from "@/theme/colors";
 import { spacing } from "@/theme/spacing";
@@ -344,6 +345,8 @@ export default function NotificationsScreen() {
                 </Pressable>
               )}
             </View>
+
+            <PushNotificationSetup />
 
             {error && (
               <View style={styles.errorBanner}>
